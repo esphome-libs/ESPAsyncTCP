@@ -2,7 +2,7 @@
 
 # ESPAsyncTCP 
 
-Project moved to [ESP32Async](https://github.com/ESP32Async) organization at [https://github.com/ESP32Async/ESPAsyncTCP](https://github.com/ESP32Async/ESPAsyncTCP)
+Project moved to [esphome-libs](https://github.com/esphome-libs) at [https://github.com/esphome-libs/ESPAsyncTCP](https://github.com/esphome-libs/ESPAsyncTCP)
 
 Discord Server: [https://discord.gg/X7zpGdyUcY](https://discord.gg/X7zpGdyUcY)
 
@@ -10,7 +10,7 @@ Please see the new links:
 
 - `ESP32Async/ESPAsyncWebServer @ 3.6.0` (ESP32, ESP8266, RP2040)
 - `ESP32Async/AsyncTCP @ 3.3.2` (ESP32)
-- `ESP32Async/ESPAsyncTCP @ 2.0.0` (ESP8266)
+- `esphome-libs/ESPAsyncTCP @ 2.1.0` (ESP8266)
 - `https://github.com/ESP32Async/AsyncTCPSock/archive/refs/tags/v1.0.3-dev.zip` (AsyncTCP alternative for ESP32)
 - `khoih-prog/AsyncTCP_RP2040W @ 1.2.0` (RP2040)
 
@@ -24,6 +24,11 @@ This library is the base for [https://github.com/ESP32Async/ESPAsyncWebServer](h
 
 ## AsyncClient and AsyncServer
 The base classes on which everything else is built. They expose all possible scenarios, but are really raw and require more skills to use.
+
+### TLS errors
+
+When SSL is enabled, `AsyncClient::onError()` may report `ASYNC_TCP_ERROR_DNS_FAILED`, `ASYNC_TCP_ERROR_TLS_HANDSHAKE_FAILED`, or `ASYNC_TCP_ERROR_TLS_FAILED`.
+BearSSL handshake errors that fit in `err_t` are reported directly and can be translated with `AsyncClient::errorToString()`.
 
 ## AsyncPrinter
 This class can be used to send data like any other ```Print``` interface (```Serial``` for example).
