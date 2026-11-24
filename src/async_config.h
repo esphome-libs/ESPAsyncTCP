@@ -5,6 +5,14 @@
 #define ASYNC_TCP_SSL_ENABLED 0
 #endif
 
+#ifndef ASYNC_TCP_SSL_BEARSSL
+#define ASYNC_TCP_SSL_BEARSSL 1
+#endif
+
+#ifndef ASYNC_TCP_SSL_AXTLS
+#define ASYNC_TCP_SSL_AXTLS 0
+#endif
+
 #ifndef TCP_MSS
 // May have been definded as a -DTCP_MSS option on the compile line or not.
 // Arduino core 2.3.0 or earlier does not do the -DTCP_MSS option.

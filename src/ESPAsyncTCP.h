@@ -24,6 +24,7 @@
 
 #include <async_config.h>
 #include "IPAddress.h"
+#include <WString.h>
 #include <functional>
 #include <memory>
 
@@ -40,6 +41,9 @@ class ACErrorTracker;
 #define ASYNC_MAX_ACK_TIME 5000
 #define ASYNC_WRITE_FLAG_COPY 0x01 //will allocate new buffer to hold the data while sending (else will hold reference to the data given)
 #define ASYNC_WRITE_FLAG_MORE 0x02 //will not send PSH flag, meaning that there should be more data to be sent before the application should react.
+#define ASYNC_TCP_ERROR_DNS_FAILED -55
+#define ASYNC_TCP_ERROR_TLS_HANDSHAKE_FAILED -56
+#define ASYNC_TCP_ERROR_TLS_FAILED -57
 
 struct tcp_pcb;
 struct ip_addr;
@@ -48,6 +52,9 @@ struct SSL_;
 typedef struct SSL_ SSL;
 struct SSL_CTX_;
 typedef struct SSL_CTX_ SSL_CTX;
+#if ASYNC_TCP_SSL_BEARSSL
+#include "tcp_bearssl_helpers.h"
+#endif
 #endif
 
 typedef std::function<void(void*, AsyncClient*)> AcConnectHandler;
@@ -128,8 +135,12 @@ class AsyncClient {
     void* _poll_cb_arg;
     bool _pcb_busy;
 #if ASYNC_TCP_SSL_ENABLED
+    String _hostname;
     bool _pcb_secure;
     bool _handshake_done;
+#if ASYNC_TCP_SSL_BEARSSL
+    SSL_CTX_PARAMS _ssl_params;
+#endif
 #endif
     uint32_t _pcb_sent_at;
     bool _close_pcb;
@@ -148,7 +159,8 @@ class AsyncClient {
     void _connected(std::shared_ptr<ACErrorTracker>& closeAbort, void* pcb, err_t err);
     void _error(err_t err);
 #if ASYNC_TCP_SSL_ENABLED
-    void _ssl_error(int8_t err);
+    bool connect(IPAddress ip, uint16_t port, bool secure, const char *host);
+    void _ssl_error(int err);
 #endif
     void _poll(std::shared_ptr<ACErrorTracker>& closeAbort, tcp_pcb* pcb);
     void _sent(std::shared_ptr<ACErrorTracker>& closeAbort, tcp_pcb* pcb, uint16_t len);
@@ -170,7 +182,7 @@ class AsyncClient {
 #if ASYNC_TCP_SSL_ENABLED
     static void _s_data(void *arg, struct tcp_pcb *tcp, uint8_t * data, size_t len);
     static void _s_handshake(void *arg, struct tcp_pcb *tcp, SSL *ssl);
-    static void _s_ssl_error(void *arg, struct tcp_pcb *tcp, int8_t err);
+    static void _s_ssl_error(void *arg, struct tcp_pcb *tcp, int err);
 #endif
     std::shared_ptr<ACErrorTracker> getACErrorTracker(void) const { return _errorTracker; };
     void setCloseError(err_t e) const { _errorTracker->setCloseError(e);}
@@ -218,6 +230,9 @@ class AsyncClient {
 #endif
 #if ASYNC_TCP_SSL_ENABLED
     SSL *getSSL();
+#if ASYNC_TCP_SSL_BEARSSL
+    void setSSLParams(SSL_CTX_PARAMS &params);
+#endif
 #endif
 
     size_t write(const char* data);
@@ -263,7 +278,9 @@ class AsyncClient {
 };
 
 #if ASYNC_TCP_SSL_ENABLED
+#if ASYNC_TCP_SSL_AXTLS
 typedef std::function<int(void* arg, const char *filename, uint8_t **buf)> AcSSlFileHandler;
+#endif
 struct pending_pcb;
 #endif
 
@@ -279,8 +296,10 @@ class AsyncServer {
 #if ASYNC_TCP_SSL_ENABLED
     struct pending_pcb * _pending;
     SSL_CTX * _ssl_ctx;
+#if ASYNC_TCP_SSL_AXTLS
     AcSSlFileHandler _file_cb;
     void* _file_cb_arg;
+#endif
 #endif
 #ifdef DEBUG_MORE
     int _event_count[EE_MAX];
@@ -293,8 +312,10 @@ class AsyncServer {
     ~AsyncServer();
     void onClient(AcConnectHandler cb, void* arg);
 #if ASYNC_TCP_SSL_ENABLED
+#if ASYNC_TCP_SSL_AXTLS
     void onSslFileRequest(AcSSlFileHandler cb, void* arg);
     void beginSecure(const char *cert, const char *private_key_file, const char *password);
+#endif
 #endif
     void begin();
     void end();

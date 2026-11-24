@@ -10,10 +10,15 @@
   "repository":
   {
     "type": "git",
-    "url": "https://github.com/ESP32Async/ESPAsyncTCP.git"
+    "url": "https://github.com/esphome-libs/ESPAsyncTCP.git"
   },
-  "version": "2.0.0",
+  "version": "2.1.0",
   "license": "LGPL-3.0",
+  "dependencies":
+  {
+    "name": "ESP8266WiFi",
+    "platforms": "espressif8266"
+  },
   "frameworks": "arduino",
   "platforms": "espressif8266"
 }

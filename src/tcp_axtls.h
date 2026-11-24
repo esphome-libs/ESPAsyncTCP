@@ -28,7 +28,7 @@
 
 #include <async_config.h>
 
-#if ASYNC_TCP_SSL_ENABLED
+#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_AXTLS
 
 #include "lwipopts.h"
 /*
@@ -57,7 +57,7 @@ extern "C" {
 
 typedef void (* tcp_ssl_data_cb_t)(void *arg, struct tcp_pcb *tcp, uint8_t * data, size_t len);
 typedef void (* tcp_ssl_handshake_cb_t)(void *arg, struct tcp_pcb *tcp, SSL *ssl);
-typedef void (* tcp_ssl_error_cb_t)(void *arg, struct tcp_pcb *tcp, int8_t error);
+typedef void (* tcp_ssl_error_cb_t)(void *arg, struct tcp_pcb *tcp, int error);
 typedef int (* tcp_ssl_file_cb_t)(void *arg, const char *filename, uint8_t **buf);
 
 uint8_t tcp_ssl_has_client();
@@ -85,6 +85,7 @@ void tcp_ssl_handshake(struct tcp_pcb *tcp, tcp_ssl_handshake_cb_t arg);
 void tcp_ssl_err(struct tcp_pcb *tcp, tcp_ssl_error_cb_t arg);
 
 SSL * tcp_ssl_get_ssl(struct tcp_pcb *tcp);
+void tcp_ssl_ctx_free(SSL_CTX* ssl_ctx);
 bool tcp_ssl_has(struct tcp_pcb *tcp);
 
 #ifdef __cplusplus

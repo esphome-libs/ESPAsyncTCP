@@ -29,7 +29,7 @@
 #include <async_config.h>
 #undef DEBUG_SKIP__DEBUG_PRINT_MACROS
 
-#if ASYNC_TCP_SSL_ENABLED
+#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_AXTLS
 
 #include "lwip/opt.h"
 #include "lwip/tcp.h"
@@ -444,6 +444,10 @@ SSL * tcp_ssl_get_ssl(struct tcp_pcb *tcp){
     return tcp_ssl->ssl;
   }
   return NULL;
+}
+
+void tcp_ssl_ctx_free(SSL_CTX* ssl_ctx) {
+  ssl_ctx_free(ssl_ctx);
 }
 
 bool tcp_ssl_has(struct tcp_pcb *tcp){
