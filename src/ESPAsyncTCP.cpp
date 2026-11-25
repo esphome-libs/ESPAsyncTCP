@@ -622,7 +622,12 @@ bool AsyncClient::_ssl_flush(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_
   if (_ssl_pump(pcb, sent_at) < 0)
     return false;
   int read = tcp_ssl_read_pending(pcb);
-  if (read < 0 && read != SSL_CLOSE_NOTIFY) {
+  if (read == SSL_CLOSE_NOTIFY) {
+    if (errorTracker->hasClient() && _pcb == pcb && tcp_ssl_has(pcb))
+      _close();
+    return false;
+  }
+  if (read < 0) {
     _ssl_abort(read);
     return false;
   }
@@ -712,6 +717,9 @@ void AsyncClient::_recv(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
     if(read_bytes < 0){
       switch (read_bytes) {
       case SSL_CLOSE_NOTIFY:
+        // The peer closed TLS; the record is gone if a callback closed the client
+        if(errorTracker->hasClient() && _pcb == pcb && tcp_ssl_has(pcb))
+          _close();
         break;
 #if ASYNC_TCP_SSL_BEARSSL
       case SSL_CANNOT_READ:
