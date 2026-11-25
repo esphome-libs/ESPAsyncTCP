@@ -609,12 +609,13 @@ void AsyncClient::_ssl_abort(int err){
     _discard_cb(_discard_cb_arg, this);
 }
 
-// Flushes pending TLS records; aborts the connection on any error
+// Flushes pending TLS records; aborts the connection on any error.
+// Handshake bytes are not tracked: _sent ignores their acks.
 int AsyncClient::_ssl_pump(tcp_pcb* pcb, uint32_t sent_at){
   int pumped = tcp_ssl_outbuf_pump(pcb);
   if (pumped < 0) {
     _ssl_abort(pumped);
-  } else if (pumped > 0) {
+  } else if (pumped > 0 && _handshake_done) {
     _pcb_busy = true;
     _pcb_sent_at = sent_at;
     _tx_unacked_len += pumped;
@@ -934,8 +935,12 @@ void AsyncClient::_s_ssl_error(void *arg, struct tcp_pcb *tcp, int err){
 #ifdef DEBUG_ESP_ASYNC_TCP
   ASYNC_TCP_DEBUG("_ssl_error[%u] err = %d\n", c->getACErrorTracker()->getConnectionId(), err);
 #endif
-  // The BearSSL handshake runs from a timer, so the connection is torn down here
-  c->_ssl_abort(err);
+  // The BearSSL handshake runs from a timer, so the connection is torn down here;
+  // a close_notify that came with the handshake is a clean close
+  if(err == SSL_CLOSE_NOTIFY)
+    c->_close();
+  else
+    c->_ssl_abort(err);
 }
 #endif
 
