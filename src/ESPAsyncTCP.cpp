@@ -320,6 +320,8 @@ bool AsyncClient::connect(const char* host, uint16_t port, bool secure){
 #else
 bool AsyncClient::connect(const char* host, uint16_t port){
 #endif
+  if (_pcb) //already connected
+    return false;
   IPAddress addr;
   // A new attempt starts without a close request left from an old connection
   _close_pcb = false;
@@ -584,8 +586,9 @@ void AsyncClient::_connected(std::shared_ptr<ACErrorTracker>& errorTracker, void
 }
 
 void AsyncClient::_close(){
-  _close_pcb = false;
   if(_pcb) {
+    // Only a connection actually torn down settles its deferred close
+    _close_pcb = false;
 #if ASYNC_TCP_SSL_ENABLED
     if(_pcb_secure){
       tcp_ssl_free(_pcb);
