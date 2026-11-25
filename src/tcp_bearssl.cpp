@@ -146,6 +146,8 @@ struct tcp_ssl_pcb {
   uint8_t type;
   uint16_t handshake_offset;
   uint16_t pending_offset;
+  // Bytes of pending already passed to tcp_recved
+  uint16_t pending_acked;
   struct pbuf *handshake;
   // Input the engine could not take yet because it had to send first
   struct pbuf *pending;
@@ -165,8 +167,7 @@ static tcp_ssl_t *tcp_ssl_array = NULL;
 static tcp_ssl_t *tcp_ssl_hsptr = NULL;
 static os_timer_t handshake_timer = {0};
 static void tcp_ssl_handshake_pump(void *);
-static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
-                           bool ack);
+static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl);
 
 // Reports a failed handshake; the error callback aborts the connection
 static void tcp_ssl_handshake_fail(tcp_ssl_t *tcp_ssl, int err) {
@@ -482,11 +483,10 @@ static int tcp_ssl_outbuf_pump_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
 
   if (send_len) {
     NET_DEBUG("tcp_ssl_outbuf_pump_int: sending %d to network\n", send_len);
+    // The records are queued; lwIP retries the output itself, as on plain TCP
     err_t err = tcp_output(tcp);
-    // ERR_RTE (no route, e.g. Wi-Fi down) is retried like on the plain TCP path
-    if (err != ERR_OK && err != ERR_RTE) {
+    if (err != ERR_OK) {
       TCP_SSL_DEBUG("tcp_ssl_outbuf_pump_int: tcp_output err - %d\n", err);
-      return ERR_TCP_SSL_OUTPUT_FAILED;
     }
   }
   return send_len;
@@ -754,8 +754,10 @@ static void tcp_ssl_handshake_pump(void *) {
               tcp_ssl->pending = rest;
               tcp_ssl->pending_offset = tcp_ssl->handshake_offset;
               // tcp_recved already ran when the handshake data was buffered
-              int res = tcp_ssl_consume(tcp, tcp_ssl, false);
-              if (res < 0 && res != SSL_CLOSE_NOTIFY) {
+              tcp_ssl->pending_acked = rest->tot_len;
+              int res = tcp_ssl_consume(tcp, tcp_ssl);
+              // A close_notify with the record still there came from the peer
+              if (res < 0 && tcp_ssl_has(tcp)) {
                 tcp_ssl_handshake_fail(tcp_ssl, res);
               }
             } else {
@@ -841,8 +843,9 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
   } else {
     tcp_ssl->pending = p;
     tcp_ssl->pending_offset = 0;
+    tcp_ssl->pending_acked = 0;
   }
-  return tcp_ssl_consume(tcp, tcp_ssl, true);
+  return tcp_ssl_consume(tcp, tcp_ssl);
 }
 
 // Decrypts p from *offset on and passes the data to on_data. Stops with
@@ -911,11 +914,9 @@ static int tcp_ssl_read_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
 
 // Reads the pending input, keeps what the engine could not take yet and frees
 // the rest
-static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
-                           bool ack) {
+static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
   struct pbuf *p = tcp_ssl->pending;
   int offset = tcp_ssl->pending_offset;
-  int start = offset;
   tcp_ssl->pending = NULL;
   int total_bytes = tcp_ssl_read_int(tcp, tcp_ssl, p, &offset);
   // The data callback closed the client and freed the record
@@ -924,8 +925,9 @@ static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
     return SSL_CLOSE_NOTIFY;
   }
   NET_DEBUG("tcp_ssl_read: processed %d / %d\n", offset, p->tot_len);
-  if (ack) {
-    tcp_recved(tcp, offset - start);
+  if (offset > tcp_ssl->pending_acked) {
+    tcp_recved(tcp, offset - tcp_ssl->pending_acked);
+    tcp_ssl->pending_acked = offset;
   }
   if (total_bytes >= 0 && offset < p->tot_len) {
     tcp_ssl->pending = p;
@@ -941,7 +943,7 @@ int tcp_ssl_read_pending(struct tcp_pcb *tcp) {
   if (!tcp_ssl || !tcp_ssl->pending) {
     return 0;
   }
-  return tcp_ssl_consume(tcp, tcp_ssl, true);
+  return tcp_ssl_consume(tcp, tcp_ssl);
 }
 
 SSL *tcp_ssl_get_ssl(struct tcp_pcb *tcp) {
