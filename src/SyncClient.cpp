@@ -264,8 +264,10 @@ size_t SyncClient::_sendBuffer(){
   if(out == NULL)
     return 0;
 
-  _tx_buffer->read(out, available);
+  // A TLS write can accept less; keep the rest queued
+  _tx_buffer->peek(out, available);
   size_t sent = _client->write(out, available);
+  _tx_buffer->remove(sent);
   delete[] out;
   return sent;
 }

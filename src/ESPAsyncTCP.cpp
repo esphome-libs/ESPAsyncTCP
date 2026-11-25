@@ -437,12 +437,18 @@ size_t AsyncClient::add(const char* data, size_t size, uint8_t apiflags) {
     while(true){
       int sent = tcp_ssl_write(_pcb, (uint8_t*)data + accepted, size - accepted);
       if(sent < 0){
-        _close();
+        _ssl_abort(sent);
         return 0;
       }
       accepted += sent;
-      // A full record must reach TCP before the engine takes more data
-      if(accepted == size || _ssl_pump(_pcb, now) <= 0)
+      // A partial record waits for send(); a full one must reach TCP before
+      // the engine takes more data
+      if(accepted == size && !tcp_ssl_has_output(_pcb))
+        return accepted;
+      int pumped = _ssl_pump(_pcb, now);
+      if(pumped < 0)
+        return 0;
+      if(accepted == size || pumped == 0)
         return accepted;
     }
 #else

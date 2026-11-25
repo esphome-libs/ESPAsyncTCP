@@ -658,6 +658,12 @@ int tcp_ssl_sndbuf(struct tcp_pcb *tcp) {
   return sendapp_len + records * record_len;
 }
 
+bool tcp_ssl_has_output(struct tcp_pcb *tcp) {
+  tcp_ssl_t *tcp_ssl = tcp_ssl_get(tcp);
+  return tcp_ssl &&
+         (br_ssl_engine_current_state(tcp_ssl->ssl_ctx->_eng) & BR_SSL_SENDREC);
+}
+
 int tcp_ssl_outbuf_pump(struct tcp_pcb *tcp) {
   if (!tcp) {
     return ERR_TCP_SSL_INVALID_TCP;
