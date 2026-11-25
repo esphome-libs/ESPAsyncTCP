@@ -522,7 +522,10 @@ int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
     return ERR_TCP_SSL_INVALID_SSL_STATE;
   }
 
-  tcp_ssl_outbuf_pump_int(tcp, tcp_ssl);
+  // The caller closes the connection and frees the record on failure
+  if (tcp_ssl_outbuf_pump_int(tcp, tcp_ssl) < 0) {
+    return ERR_TCP_SSL_OUTPUT_FAILED;
+  }
   return 0;
 }
 
@@ -716,13 +719,10 @@ static void tcp_ssl_handshake_pump(void *) {
           int ssl_error = br_ssl_engine_last_error(engine);
           TCP_SSL_DEBUG("tcp_ssl_handshake_pump: handshake failed (%d)\n",
                         ssl_error);
-          struct tcp_pcb *tcp = tcp_ssl_hsptr->tcp;
+          // The error callback aborts the connection
           if (tcp_ssl_hsptr->on_error) {
-            tcp_ssl_hsptr->on_error(tcp_ssl_hsptr->arg, tcp, ssl_error);
-          }
-          // The error callback may have closed the client and freed the record
-          if (tcp_ssl_get(tcp)) {
-            tcp_abort(tcp);
+            tcp_ssl_hsptr->on_error(tcp_ssl_hsptr->arg, tcp_ssl_hsptr->tcp,
+                                    ssl_error);
           }
         } else if (state & BR_SSL_SENDAPP) {
           HS_DEBUG("tcp_ssl_handshake_pump: handshake successful\n");
@@ -833,7 +833,7 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
         if (tcp_ssl->on_data) {
           tcp_ssl->on_data(tcp_ssl->arg, tcp, recv_buf, _recv_len);
           // The callback may have closed the client, which frees the engine
-          if (!tcp_ssl_get(tcp)) {
+          if (!tcp_ssl_has(tcp)) {
             pbuf_free(p);
             return SSL_CLOSE_NOTIFY;
           }
@@ -862,10 +862,8 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
         total_bytes = ERR_TCP_SSL_INVALID_SSL_STATE;
         break;
       }
-      pumped_for_progress = true;
-    } else {
-      pumped_for_progress = false;
     }
+    pumped_for_progress = !progress;
   } while (pbuf_size > 0);
 
   NET_DEBUG("tcp_ssl_read: processed %d / %d\n", pbuf_offset, p->tot_len);

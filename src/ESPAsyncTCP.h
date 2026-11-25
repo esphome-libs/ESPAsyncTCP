@@ -161,6 +161,9 @@ class AsyncClient {
 #if ASYNC_TCP_SSL_ENABLED
     bool connect(IPAddress ip, uint16_t port, bool secure, const char *host);
     void _ssl_error(int err);
+#if ASYNC_TCP_SSL_BEARSSL
+    int _ssl_pump(tcp_pcb* pcb, uint32_t sent_at);
+#endif
 #endif
     void _poll(std::shared_ptr<ACErrorTracker>& closeAbort, tcp_pcb* pcb);
     void _sent(std::shared_ptr<ACErrorTracker>& closeAbort, tcp_pcb* pcb, uint16_t len);

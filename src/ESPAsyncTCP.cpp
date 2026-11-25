@@ -459,17 +459,7 @@ bool AsyncClient::send(){
 #if ASYNC_TCP_SSL_ENABLED
   if(_pcb_secure){
 #if ASYNC_TCP_SSL_BEARSSL
-    int pumped = tcp_ssl_outbuf_pump(_pcb);
-    if (pumped == ERR_TCP_SSL_OUTPUT_FAILED) {
-      abort();
-      return false;
-    }
-    if (pumped > 0) {
-      _pcb_busy = true;
-      _pcb_sent_at = millis();
-      _tx_unacked_len += pumped;
-    }
-    return pumped >= 0;
+    return _ssl_pump(_pcb, millis()) >= 0;
 #else
     return true;
 #endif
@@ -596,22 +586,29 @@ void AsyncClient::_ssl_error(int err){
   if(_error_cb)
     _error_cb(_error_cb_arg, this, to_async_ssl_error(err, _handshake_done));
 }
+
+#if ASYNC_TCP_SSL_BEARSSL
+// Flushes pending TLS records; aborts the connection on any error
+int AsyncClient::_ssl_pump(tcp_pcb* pcb, uint32_t sent_at){
+  int pumped = tcp_ssl_outbuf_pump(pcb);
+  if (pumped < 0) {
+    abort();
+  } else if (pumped > 0) {
+    _pcb_busy = true;
+    _pcb_sent_at = sent_at;
+    _tx_unacked_len += pumped;
+  }
+  return pumped;
+}
+#endif
 #endif
 
 void AsyncClient::_sent(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* pcb, uint16_t len) {
 #if ASYNC_TCP_SSL_ENABLED
   if (_pcb_secure){
 #if ASYNC_TCP_SSL_BEARSSL
-    int pumped = tcp_ssl_outbuf_pump(pcb);
-    if (pumped == ERR_TCP_SSL_OUTPUT_FAILED) {
-      abort();
+    if (_ssl_pump(pcb, _rx_last_packet) < 0)
       return;
-    }
-    if (pumped > 0) {
-      _pcb_busy = true;
-      _pcb_sent_at = _rx_last_packet;
-      _tx_unacked_len += pumped;
-    }
 #endif
     if (!_handshake_done)
       return;
@@ -777,16 +774,8 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
   }
 #if ASYNC_TCP_SSL_BEARSSL
   if (_pcb_secure) {
-    int pumped = tcp_ssl_outbuf_pump(pcb);
-    if (pumped == ERR_TCP_SSL_OUTPUT_FAILED) {
-      abort();
+    if (_ssl_pump(pcb, now) < 0)
       return;
-    }
-    if (pumped > 0) {
-      _pcb_busy = true;
-      _pcb_sent_at = now;
-      _tx_unacked_len += pumped;
-    }
   }
 #endif
 #endif
@@ -881,12 +870,13 @@ void AsyncClient::_s_handshake(void *arg, struct tcp_pcb *tcp, SSL *ssl){
 
 void AsyncClient::_s_ssl_error(void *arg, struct tcp_pcb *tcp, int err){
   (void)tcp;
-#ifdef DEBUG_ESP_ASYNC_TCP
   AsyncClient *c = reinterpret_cast<AsyncClient*>(arg);
   auto errorTracker = c->getACErrorTracker();
   ASYNC_TCP_DEBUG("_ssl_error[%u] err = %d\n", errorTracker->getConnectionId(), err);
-#endif
-  reinterpret_cast<AsyncClient*>(arg)->_ssl_error(err);
+  c->_ssl_error(err);
+  // The handshake failed; abort unless the error callback closed or freed the client
+  if(errorTracker->hasClient())
+    c->abort();
 }
 #endif
 
