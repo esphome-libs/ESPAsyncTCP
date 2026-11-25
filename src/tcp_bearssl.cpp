@@ -916,8 +916,10 @@ static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
     tcp_ssl->pending_acked = offset;
   }
   if (total_bytes >= 0 && offset < p->tot_len) {
-    tcp_ssl->pending = p;
-    tcp_ssl->pending_offset = offset;
+    // Free the fully read head pbufs; offsets restart at the first unread byte
+    tcp_ssl->pending = pbuf_free_header(p, offset);
+    tcp_ssl->pending_acked -= offset;
+    tcp_ssl->pending_offset = 0;
   } else {
     pbuf_free(p);
   }
