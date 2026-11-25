@@ -10,6 +10,12 @@
 #define ASYNC_TCP_SSL_BEARSSL 1
 #endif
 
+// Milliseconds without a packet from the server before a TLS handshake is given
+// up; the client's own key exchange can take about 2 s on an ESP8266
+#ifndef ASYNC_TCP_SSL_HANDSHAKE_TIMEOUT
+#define ASYNC_TCP_SSL_HANDSHAKE_TIMEOUT 10000
+#endif
+
 #if ASYNC_TCP_SSL_ENABLED
 #if defined(ASYNC_TCP_SSL_AXTLS) && ASYNC_TCP_SSL_AXTLS
 #error "axTLS support was removed; BearSSL is the only TLS backend"
