@@ -834,13 +834,15 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
     // Cleared first, so a teardown in the pump cannot close a later connection
     _close_pcb = false;
 #if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
-    // Hand buffered TLS records to TCP first, so the peer does not get a truncated
-    // record; give up once the ack timeout has passed since close() was called
+    // Wait until buffered TLS records reached TCP and the peer acknowledged them, so
+    // the last records (e.g. an MQTT DISCONNECT) are not lost when the connection
+    // closes; give up once the ack timeout has passed since close() was called
     if(_pcb_secure && _handshake_done){
       uint32_t now = millis();
       if(_ssl_pump(pcb, now) < 0)
         return;
-      if(tcp_ssl_has_output(pcb) && !(_ack_timeout && (now - _close_requested_at) >= _ack_timeout)){
+      if((tcp_ssl_has_output(pcb) || _tx_unacked_len > 0) &&
+         !(_ack_timeout && (now - _close_requested_at) >= _ack_timeout)){
         _close_pcb = true;
         return;
       }
