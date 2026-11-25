@@ -467,6 +467,8 @@ size_t AsyncClient::add(const char* data, size_t size, uint8_t apiflags) {
 }
 
 bool AsyncClient::send(){
+  if(!_pcb)
+    return false;
 #if ASYNC_TCP_SSL_ENABLED
   if(_pcb_secure){
 #if ASYNC_TCP_SSL_BEARSSL
@@ -598,18 +600,44 @@ void AsyncClient::_ssl_error(int err){
     _error_cb(_error_cb_arg, this, to_async_ssl_error(err, _handshake_done));
 }
 
+// Tears a TLS connection down after an error, also from inside a callback:
+// detaches and frees everything before the handlers run, as they may delete this
+void AsyncClient::_ssl_abort(int err){
+  if(!_pcb)
+    return;
+  tcp_ssl_free(_pcb);
+  clearTcpCallbacks(_pcb);
+  abort();
+  _ssl_error(err);
+  if(_discard_cb)
+    _discard_cb(_discard_cb_arg, this);
+}
+
 #if ASYNC_TCP_SSL_BEARSSL
 // Flushes pending TLS records; aborts the connection on any error
 int AsyncClient::_ssl_pump(tcp_pcb* pcb, uint32_t sent_at){
   int pumped = tcp_ssl_outbuf_pump(pcb);
   if (pumped < 0) {
-    abort();
+    _ssl_abort(pumped);
   } else if (pumped > 0) {
     _pcb_busy = true;
     _pcb_sent_at = sent_at;
     _tx_unacked_len += pumped;
   }
   return pumped;
+}
+
+// Flushes TLS output, then reads the input the engine held back until it could
+// send; false when the connection is gone and the caller must return
+bool AsyncClient::_ssl_flush(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* pcb, uint32_t sent_at){
+  if (_ssl_pump(pcb, sent_at) < 0)
+    return false;
+  int read = tcp_ssl_read_pending(pcb);
+  if (read < 0 && read != SSL_CLOSE_NOTIFY) {
+    _ssl_abort(read);
+    return false;
+  }
+  return errorTracker->hasClient() && _pcb;
 }
 #endif
 #endif
@@ -618,7 +646,7 @@ void AsyncClient::_sent(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
 #if ASYNC_TCP_SSL_ENABLED
   if (_pcb_secure){
 #if ASYNC_TCP_SSL_BEARSSL
-    if (_ssl_pump(pcb, _rx_last_packet) < 0)
+    if (!_ssl_flush(errorTracker, pcb, _rx_last_packet))
       return;
 #endif
     if (!_handshake_done)
@@ -703,9 +731,7 @@ void AsyncClient::_recv(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
 #endif
       default:
         ASYNC_TCP_DEBUG("_recv[%u] err: %d\n", getConnectionId(), read_bytes);
-        _ssl_error(read_bytes);
-        tcp_ssl_free(pcb);
-        abort();
+        _ssl_abort(read_bytes);
         return;
       }
     }
@@ -785,7 +811,7 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
   }
 #if ASYNC_TCP_SSL_BEARSSL
   if (_pcb_secure) {
-    if (_ssl_pump(pcb, now) < 0)
+    if (!_ssl_flush(errorTracker, pcb, now))
       return;
   }
 #endif
@@ -882,12 +908,16 @@ void AsyncClient::_s_handshake(void *arg, struct tcp_pcb *tcp, SSL *ssl){
 void AsyncClient::_s_ssl_error(void *arg, struct tcp_pcb *tcp, int err){
   (void)tcp;
   AsyncClient *c = reinterpret_cast<AsyncClient*>(arg);
-  auto errorTracker = c->getACErrorTracker();
-  ASYNC_TCP_DEBUG("_ssl_error[%u] err = %d\n", errorTracker->getConnectionId(), err);
+#ifdef DEBUG_ESP_ASYNC_TCP
+  ASYNC_TCP_DEBUG("_ssl_error[%u] err = %d\n", c->getACErrorTracker()->getConnectionId(), err);
+#endif
+#if ASYNC_TCP_SSL_BEARSSL
+  // The BearSSL handshake runs from a timer, so the connection is torn down here
+  c->_ssl_abort(err);
+#else
+  // axTLS returns the error to _recv, which tears the connection down
   c->_ssl_error(err);
-  // The handshake failed; abort unless the error callback closed or freed the client
-  if(errorTracker->hasClient())
-    c->abort();
+#endif
 }
 #endif
 
