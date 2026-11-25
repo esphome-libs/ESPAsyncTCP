@@ -5,15 +5,18 @@
 #define ASYNC_TCP_SSL_ENABLED 0
 #endif
 
-#if defined(ASYNC_TCP_SSL_AXTLS) && ASYNC_TCP_SSL_AXTLS
-#error "axTLS support was removed; BearSSL is the only TLS backend"
-#endif
-
 // BearSSL is the only TLS backend; kept for code that still tests it.
 #ifndef ASYNC_TCP_SSL_BEARSSL
 #define ASYNC_TCP_SSL_BEARSSL 1
-#elif !ASYNC_TCP_SSL_BEARSSL
+#endif
+
+#if ASYNC_TCP_SSL_ENABLED
+#if defined(ASYNC_TCP_SSL_AXTLS) && ASYNC_TCP_SSL_AXTLS
+#error "axTLS support was removed; BearSSL is the only TLS backend"
+#endif
+#if !ASYNC_TCP_SSL_BEARSSL
 #error "BearSSL is the only TLS backend; ASYNC_TCP_SSL_BEARSSL cannot be 0"
+#endif
 #endif
 
 #ifndef TCP_MSS
