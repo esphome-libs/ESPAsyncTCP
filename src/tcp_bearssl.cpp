@@ -146,6 +146,8 @@ struct tcp_ssl_pcb {
   uint8_t type;
   uint16_t handshake_offset;
   uint16_t pending_offset;
+  // Bytes of pending already passed to tcp_recved
+  uint16_t pending_acked;
   struct pbuf *handshake;
   // Input the engine could not take yet because it had to send first
   struct pbuf *pending;
@@ -474,11 +476,10 @@ static int tcp_ssl_outbuf_pump_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
 
   if (send_len) {
     NET_DEBUG("tcp_ssl_outbuf_pump_int: sending %d to network\n", send_len);
+    // The records are queued; lwIP retries the output itself, as on plain TCP
     err_t err = tcp_output(tcp);
-    // ERR_RTE (no route, e.g. Wi-Fi down) is retried like on the plain TCP path
-    if (err != ERR_OK && err != ERR_RTE) {
+    if (err != ERR_OK) {
       TCP_SSL_DEBUG("tcp_ssl_outbuf_pump_int: tcp_output err - %d\n", err);
-      return ERR_TCP_SSL_OUTPUT_FAILED;
     }
   }
   return send_len;
@@ -817,6 +818,7 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
   } else {
     tcp_ssl->pending = p;
     tcp_ssl->pending_offset = 0;
+    tcp_ssl->pending_acked = 0;
   }
   return tcp_ssl_consume(tcp, tcp_ssl);
 }
@@ -890,7 +892,6 @@ static int tcp_ssl_read_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
 static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
   struct pbuf *p = tcp_ssl->pending;
   int offset = tcp_ssl->pending_offset;
-  int start = offset;
   tcp_ssl->pending = NULL;
   int total_bytes = tcp_ssl_read_int(tcp, tcp_ssl, p, &offset);
   // The data callback closed the client and freed the record
@@ -899,7 +900,10 @@ static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
     return SSL_CLOSE_NOTIFY;
   }
   NET_DEBUG("tcp_ssl_read: processed %d / %d\n", offset, p->tot_len);
-  tcp_recved(tcp, offset - start);
+  if (offset > tcp_ssl->pending_acked) {
+    tcp_recved(tcp, offset - tcp_ssl->pending_acked);
+    tcp_ssl->pending_acked = offset;
+  }
   if (total_bytes >= 0 && offset < p->tot_len) {
     tcp_ssl->pending = p;
     tcp_ssl->pending_offset = offset;
