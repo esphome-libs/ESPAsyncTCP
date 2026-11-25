@@ -144,6 +144,9 @@ class AsyncClient {
 #endif
     uint32_t _pcb_sent_at;
     bool _close_pcb;
+#if ASYNC_TCP_SSL_ENABLED
+    uint32_t _close_requested_at;  // TLS records may still drain after close(false)
+#endif
     bool _ack_pcb;
     uint32_t _tx_unacked_len;
     uint32_t _tx_acked_len;

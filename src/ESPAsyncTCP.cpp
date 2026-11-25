@@ -200,6 +200,9 @@ AsyncClient::AsyncClient(tcp_pcb* pcb):
 #endif
   , _pcb_sent_at(0)
   , _close_pcb(false)
+#if ASYNC_TCP_SSL_ENABLED
+  , _close_requested_at(0)
+#endif
   , _ack_pcb(true)
   , _tx_unacked_len(0)
   , _tx_acked_len(0)
@@ -406,6 +409,9 @@ void AsyncClient::close(bool now){
     _close();
   } else {
     _close_pcb = true;
+#if ASYNC_TCP_SSL_ENABLED
+    _close_requested_at = millis();
+#endif
   }
 }
 
@@ -817,18 +823,22 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
 
   // Close requested
   if(_close_pcb){
+    // Cleared first, so a teardown in the pump cannot close a later connection
+    _close_pcb = false;
 #if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
     // Hand buffered TLS records to TCP first, so the peer does not get a truncated
-    // record; give up once the ack timeout passes
+    // record; give up once the ack timeout has passed since close() was called
     if(_pcb_secure && _handshake_done){
-      if(_ssl_pump(pcb, _pcb_sent_at) < 0)
+      uint32_t now = millis();
+      if(_ssl_pump(pcb, now) < 0)
         return;
-      if(tcp_ssl_has_output(pcb) && !(_ack_timeout && (millis() - _pcb_sent_at) >= _ack_timeout))
+      if(tcp_ssl_has_output(pcb) && !(_ack_timeout && (now - _close_requested_at) >= _ack_timeout)){
+        _close_pcb = true;
         return;
+      }
     }
 #endif
     ASYNC_TCP_DEBUG("_poll[%u]: Process _close_pcb.\n", errorTracker->getConnectionId() );
-    _close_pcb = false;
     _close();
     return;
   }
