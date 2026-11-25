@@ -239,6 +239,12 @@ AsyncClient::AsyncClient(tcp_pcb* pcb):
 #endif
   }
 
+  _resetErrorTracker();
+}
+
+void AsyncClient::_resetErrorTracker(){
+  if(_errorTracker)
+    _errorTracker->clearClient();
   _errorTracker = std::make_shared<ACErrorTracker>(this);
 #if DEBUG_ESP_ASYNC_TCP
   _errorTracker->setConnectionId(++_connectionCount);
@@ -283,6 +289,10 @@ bool AsyncClient::connect(IPAddress ip, uint16_t port){
   if (!pcb){ //could not allocate pcb
     return false;
   }
+
+  // A fresh tracker per connection: an abort outside a callback (timer, send())
+  // leaves ERR_ABRT behind that must not reach the next connection's callbacks
+  _resetErrorTracker();
 
   tcp_setprio(pcb, TCP_PRIO_MIN);
 #if ASYNC_TCP_SSL_ENABLED
@@ -598,8 +608,10 @@ void AsyncClient::_ssl_abort(int err){
   tcp_ssl_free(_pcb);
   clearTcpCallbacks(_pcb);
   abort();
+  auto errorTracker = _errorTracker;
   _ssl_error(err);
-  if(_discard_cb)
+  // onError may have deleted the client
+  if(errorTracker->hasClient() && _discard_cb)
     _discard_cb(_discard_cb_arg, this);
 }
 
