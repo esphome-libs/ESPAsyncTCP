@@ -3,7 +3,6 @@
 
 #include <Stream.h>
 
-#if ASYNC_TCP_SSL_BEARSSL
 struct SSL_CTX_PARAMS {
   bool use_insecure = false;
   bool use_fingerprint = false;
@@ -16,7 +15,5 @@ struct SSL_CTX_PARAMS {
                use_fingerprint, use_self_signed, iobuf_in_size, iobuf_out_size);
   }
 };
-
-#endif
 
 #endif // ASYNCTCP_TCP_BEARSSL_HELPERS_H_

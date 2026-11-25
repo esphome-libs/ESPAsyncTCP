@@ -30,7 +30,7 @@
 #include <async_config.h>
 #include <memory>
 
-#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
+#if ASYNC_TCP_SSL_ENABLED
 
 #include "tcp_bearssl_helpers.h"
 
@@ -63,7 +63,6 @@ class X509List;
 #define TCP_SSL_TYPE_CLIENT_ALL 0x0F
 #define TCP_SSL_TYPE_CLIENT_CONNECTED 0x01
 #define TCP_SSL_TYPE_CLIENT_HANDSHAKED 0x02
-#define TCP_SSL_TYPE_SERVER_ALL 0xF0
 
 // XXX: this is a dumb c/p from WiFiClientSecure **cpp**
 extern "C" {
@@ -94,8 +93,8 @@ typedef struct SSL_CTX_ {
   std::shared_ptr<br_x509_minimal_context> _x509_minimal;
   std::shared_ptr<struct br_x509_insecure_context> _x509_insecure;
   std::shared_ptr<br_x509_knownkey_context> _x509_knownkey;
-  std::shared_ptr<unsigned char> _iobuf_in;
-  std::shared_ptr<unsigned char> _iobuf_out;
+  std::unique_ptr<unsigned char[]> _iobuf_in;
+  std::unique_ptr<unsigned char[]> _iobuf_out;
 
   std::shared_ptr<uint16_t> _cipher_list;
 
@@ -116,10 +115,6 @@ typedef void (*tcp_ssl_data_cb_t)(void *arg, struct tcp_pcb *tcp, uint8_t *data,
 typedef void (*tcp_ssl_handshake_cb_t)(void *arg, struct tcp_pcb *tcp,
                                        SSL *ssl);
 typedef void (*tcp_ssl_error_cb_t)(void *arg, struct tcp_pcb *tcp, int error);
-typedef int (*tcp_ssl_cert_cb_t)(void *arg, struct tcp_pcb *tcp, void *dn_hash,
-                                 size_t dn_hash_len, uint8_t **buf);
-
-uint8_t tcp_ssl_has_client();
 
 #define SSL_BUF_OVERHEAD 325
 #define SSL_BUF_MINIMUM_DATALEN 512
@@ -142,14 +137,9 @@ uint8_t tcp_ssl_has_client();
 #define BEARSSL_DEFAULT_IN_BUF_SIZE SSL_DEFAULT_BUF_SIZE
 #define BEARSSL_DEFAULT_OUT_BUF_SIZE SSL_MINIMUM_BUF_SIZE
 
-int tcp_ssl_new_client(struct tcp_pcb *tcp, const char *hostName);
 int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
                           SSL_CTX_PARAMS &params);
 
-SSL_CTX *tcp_ssl_new_server_ctx(const char *cert, const char *private_key_file,
-                                const char *password);
-int tcp_ssl_new_server(struct tcp_pcb *tcp, SSL_CTX *ssl_ctx);
-int tcp_ssl_is_server(struct tcp_pcb *tcp);
 
 int tcp_ssl_free(struct tcp_pcb *tcp);
 int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p);
@@ -164,7 +154,6 @@ void tcp_ssl_arg(struct tcp_pcb *tcp, void *arg);
 void tcp_ssl_data(struct tcp_pcb *tcp, tcp_ssl_data_cb_t arg);
 void tcp_ssl_handshake(struct tcp_pcb *tcp, tcp_ssl_handshake_cb_t arg);
 void tcp_ssl_err(struct tcp_pcb *tcp, tcp_ssl_error_cb_t arg);
-void tcp_ssl_cert(struct tcp_pcb *tcp, tcp_ssl_cert_cb_t arg);
 
 SSL *tcp_ssl_get_ssl(struct tcp_pcb *tcp);
 void tcp_ssl_ctx_free(SSL_CTX *ssl_ctx);

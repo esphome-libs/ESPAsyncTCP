@@ -50,11 +50,7 @@ struct ip_addr;
 #if ASYNC_TCP_SSL_ENABLED
 struct SSL_;
 typedef struct SSL_ SSL;
-struct SSL_CTX_;
-typedef struct SSL_CTX_ SSL_CTX;
-#if ASYNC_TCP_SSL_BEARSSL
 #include "tcp_bearssl_helpers.h"
-#endif
 #endif
 
 typedef std::function<void(void*, AsyncClient*)> AcConnectHandler;
@@ -138,9 +134,7 @@ class AsyncClient {
     String _hostname;
     bool _pcb_secure;
     bool _handshake_done;
-#if ASYNC_TCP_SSL_BEARSSL
     SSL_CTX_PARAMS _ssl_params;
-#endif
 #endif
     uint32_t _pcb_sent_at;
     bool _close_pcb;
@@ -166,10 +160,8 @@ class AsyncClient {
     bool connect(IPAddress ip, uint16_t port, bool secure, const char *host);
     void _ssl_error(int err);
     void _ssl_abort(int err);
-#if ASYNC_TCP_SSL_BEARSSL
     int _ssl_pump(tcp_pcb* pcb, uint32_t sent_at);
     bool _ssl_flush(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* pcb, uint32_t sent_at);
-#endif
 #endif
     void _poll(std::shared_ptr<ACErrorTracker>& closeAbort, tcp_pcb* pcb);
     void _sent(std::shared_ptr<ACErrorTracker>& closeAbort, tcp_pcb* pcb, uint16_t len);
@@ -200,11 +192,7 @@ class AsyncClient {
     AsyncClient* prev;
     AsyncClient* next;
 
-#if ASYNC_TCP_SSL_ENABLED
-    AsyncClient(tcp_pcb* pcb = 0, SSL_CTX * ssl_ctx = NULL);
-#else
     AsyncClient(tcp_pcb* pcb = 0);
-#endif
     ~AsyncClient();
 
     AsyncClient & operator=(const AsyncClient &other);
@@ -239,9 +227,7 @@ class AsyncClient {
 #endif
 #if ASYNC_TCP_SSL_ENABLED
     SSL *getSSL();
-#if ASYNC_TCP_SSL_BEARSSL
     void setSSLParams(SSL_CTX_PARAMS &params);
-#endif
 #endif
 
     size_t write(const char* data);
@@ -287,29 +273,20 @@ class AsyncClient {
 };
 
 #if ASYNC_TCP_SSL_ENABLED
-#if ASYNC_TCP_SSL_AXTLS
 typedef std::function<int(void* arg, const char *filename, uint8_t **buf)> AcSSlFileHandler;
 #endif
-struct pending_pcb;
-#endif
-
 
 class AsyncServer {
   protected:
     uint16_t _port;
     IPAddress _addr;
     bool _noDelay;
+#if ASYNC_TCP_SSL_ENABLED
+    bool _secure_requested = false;
+#endif
     tcp_pcb* _pcb;
     AcConnectHandler _connect_cb;
     void* _connect_cb_arg;
-#if ASYNC_TCP_SSL_ENABLED
-    struct pending_pcb * _pending;
-    SSL_CTX * _ssl_ctx;
-#if ASYNC_TCP_SSL_AXTLS
-    AcSSlFileHandler _file_cb;
-    void* _file_cb_arg;
-#endif
-#endif
 #ifdef DEBUG_MORE
     int _event_count[EE_MAX];
 #endif
@@ -321,10 +298,14 @@ class AsyncServer {
     ~AsyncServer();
     void onClient(AcConnectHandler cb, void* arg);
 #if ASYNC_TCP_SSL_ENABLED
-#if ASYNC_TCP_SSL_AXTLS
-    void onSslFileRequest(AcSSlFileHandler cb, void* arg);
-    void beginSecure(const char *cert, const char *private_key_file, const char *password);
-#endif
+    // TLS server mode is not supported; kept so ESPAsyncWebServer compiles with TLS enabled.
+    void onSslFileRequest(AcSSlFileHandler cb, void* arg) { (void)cb; (void)arg; }
+    // There is no TLS server; refuse to listen at all rather than serve plaintext
+    void beginSecure(const char *cert, const char *private_key_file, const char *password) {
+      (void)cert; (void)private_key_file; (void)password;
+      end();
+      _secure_requested = true;
+    }
 #endif
     void begin();
     void end();
@@ -339,14 +320,6 @@ class AsyncServer {
     static err_t _s_accept(void *arg, tcp_pcb* newpcb, err_t err);
 #ifdef DEBUG_MORE
     int incEventCount(size_t ee) { return ++_event_count[ee];}
-#endif
-#if ASYNC_TCP_SSL_ENABLED
-    int _cert(const char *filename, uint8_t **buf);
-    err_t _poll(tcp_pcb* pcb);
-    err_t _recv(tcp_pcb *pcb, struct pbuf *pb, err_t err);
-    static int _s_cert(void *arg, const char *filename, uint8_t **buf);
-    static err_t _s_poll(void *arg, struct tcp_pcb *tpcb);
-    static err_t _s_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *pb, err_t err);
 #endif
 };
 
