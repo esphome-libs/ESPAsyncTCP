@@ -264,10 +264,14 @@ size_t SyncClient::_sendBuffer(){
   if(out == NULL)
     return 0;
 
-  // A TLS write can accept less; keep the rest queued
+  // A TLS add() can take less; dequeue only what it took, before send(),
+  // which can tear the client down
   _tx_buffer->peek(out, available);
-  size_t sent = _client->write(out, available);
-  _tx_buffer->remove(sent);
+  size_t sent = _client->add(out, available);
+  if(sent){
+    _tx_buffer->remove(sent);
+    _client->send();
+  }
   delete[] out;
   return sent;
 }
@@ -349,7 +353,9 @@ size_t SyncClient::write(const uint8_t *data, size_t len){
       delay(0);
     if(!connected())
       return 0;
-    _sendBuffer();
+    // No progress (e.g. lwIP out of memory): yield before trying again
+    if(!_sendBuffer())
+      delay(0);
     toSend -= toWrite;
   }
   _tx_buffer->write((const char*)(data+(len - toSend)), toSend);
