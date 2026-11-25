@@ -145,7 +145,10 @@ struct tcp_ssl_pcb {
   SSL *ssl;
   uint8_t type;
   uint16_t handshake_offset;
+  uint16_t pending_offset;
   struct pbuf *handshake;
+  // Input the engine could not take yet because it had to send first
+  struct pbuf *pending;
   void *arg;
   tcp_ssl_data_cb_t on_data;
   tcp_ssl_handshake_cb_t on_handshake;
@@ -162,6 +165,7 @@ static tcp_ssl_t *tcp_ssl_array = NULL;
 static tcp_ssl_t *tcp_ssl_hsptr = NULL;
 static os_timer_t handshake_timer = {0};
 static void tcp_ssl_handshake_pump(void *);
+static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl);
 
 uint8_t tcp_ssl_has_client() { return _tcp_ssl_has_client; }
 
@@ -564,6 +568,9 @@ int tcp_ssl_free(struct tcp_pcb *tcp) {
   if (cur->handshake) {
     pbuf_free(cur->handshake);
   }
+  if (cur->pending) {
+    pbuf_free(cur->pending);
+  }
   if (cur->ssl) {
     tcp_ssl_free_ssl(cur->ssl);
   }
@@ -804,10 +811,24 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
     return pbuf_size;
   }
 
-  int pbuf_offset = 0;
+  if (tcp_ssl->pending) {
+    // Keep the order: new data goes after the input still waiting
+    pbuf_cat(tcp_ssl->pending, p);
+  } else {
+    tcp_ssl->pending = p;
+    tcp_ssl->pending_offset = 0;
+  }
+  return tcp_ssl_consume(tcp, tcp_ssl);
+}
+
+// Decrypts p from *offset on and passes the data to on_data. Stops with
+// *offset short of the end when the engine must send before it reads more.
+static int tcp_ssl_read_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
+                            struct pbuf *p, int *offset) {
+  br_ssl_engine_context *engine = tcp_ssl->ssl_ctx->_eng;
+  int pbuf_size = p->tot_len - *offset;
   int total_bytes = 0;
-  bool pumped_for_progress = false;
-  do {
+  while (pbuf_size > 0) {
     bool progress = false;
     size_t _recv_len = 0;
     unsigned char *recv_buf = br_ssl_engine_recvrec_buf(engine, &_recv_len);
@@ -815,15 +836,15 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
       progress = true;
       int to_copy = _recv_len < pbuf_size ? _recv_len : pbuf_size;
       NET_DEBUG("tcp_ssl_read: consuming %d / %d\n", to_copy, pbuf_size);
-      to_copy = pbuf_copy_partial(p, recv_buf, to_copy, pbuf_offset);
+      to_copy = pbuf_copy_partial(p, recv_buf, to_copy, *offset);
       READ_DEBUG("tcp_ssl_read: consumed %d\n", to_copy);
-      pbuf_offset += to_copy;
+      *offset += to_copy;
       pbuf_size -= to_copy;
       br_ssl_engine_recvrec_ack(engine, to_copy);
     }
     // Feed the dog before it bites
     system_soft_wdt_feed();
-    state = br_ssl_engine_current_state(engine);
+    unsigned state = br_ssl_engine_current_state(engine);
     if (state & BR_SSL_RECVAPP) {
       _recv_len = 0;
       unsigned char *recv_buf = br_ssl_engine_recvapp_buf(engine, &_recv_len);
@@ -834,7 +855,6 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
           tcp_ssl->on_data(tcp_ssl->arg, tcp, recv_buf, _recv_len);
           // The callback may have closed the client, which frees the engine
           if (!tcp_ssl_has(tcp)) {
-            pbuf_free(p);
             return SSL_CLOSE_NOTIFY;
           }
         }
@@ -847,30 +867,54 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
         TCP_SSL_DEBUG("tcp_ssl_read: connection failed - error (%d)\n",
                       ssl_error);
         // The caller reports the error and aborts the connection
-        total_bytes = ERR_TCP_SSL_INVALID_SSL_DATA;
-      } else {
-        TCP_SSL_DEBUG("tcp_ssl_read: connection closed\n");
-        total_bytes = SSL_CLOSE_NOTIFY;
+        return ERR_TCP_SSL_INVALID_SSL_DATA;
       }
-      break;
+      TCP_SSL_DEBUG("tcp_ssl_read: connection closed\n");
+      return SSL_CLOSE_NOTIFY;
     }
     if (!progress) {
-      // The engine must send (an alert, a renegotiation reply) before it reads
-      // again; flush once, and give up rather than spin if that does not help
-      if (pumped_for_progress || tcp_ssl_outbuf_pump_int(tcp, tcp_ssl) <= 0) {
+      if ((state & BR_SSL_SENDREC) == 0) {
         TCP_SSL_DEBUG("tcp_ssl_read: engine stalled\n");
-        total_bytes = ERR_TCP_SSL_INVALID_SSL_STATE;
-        break;
+        return ERR_TCP_SSL_INVALID_SSL_STATE;
       }
+      // The engine must send first (an alert, a renegotiation reply); the
+      // rest is read once AsyncClient has flushed the output
+      break;
     }
-    pumped_for_progress = !progress;
-  } while (pbuf_size > 0);
-
-  NET_DEBUG("tcp_ssl_read: processed %d / %d\n", pbuf_offset, p->tot_len);
-  tcp_recved(tcp, p->tot_len);
-  pbuf_free(p);
-
+  }
   return total_bytes;
+}
+
+// Reads the pending input, keeps what the engine could not take yet and frees
+// the rest
+static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
+  struct pbuf *p = tcp_ssl->pending;
+  int offset = tcp_ssl->pending_offset;
+  int start = offset;
+  tcp_ssl->pending = NULL;
+  int total_bytes = tcp_ssl_read_int(tcp, tcp_ssl, p, &offset);
+  // The data callback closed the client and freed the record
+  if (!tcp_ssl_has(tcp)) {
+    pbuf_free(p);
+    return SSL_CLOSE_NOTIFY;
+  }
+  NET_DEBUG("tcp_ssl_read: processed %d / %d\n", offset, p->tot_len);
+  tcp_recved(tcp, offset - start);
+  if (total_bytes >= 0 && offset < p->tot_len) {
+    tcp_ssl->pending = p;
+    tcp_ssl->pending_offset = offset;
+  } else {
+    pbuf_free(p);
+  }
+  return total_bytes;
+}
+
+int tcp_ssl_read_pending(struct tcp_pcb *tcp) {
+  tcp_ssl_t *tcp_ssl = tcp_ssl_get(tcp);
+  if (!tcp_ssl || !tcp_ssl->pending) {
+    return 0;
+  }
+  return tcp_ssl_consume(tcp, tcp_ssl);
 }
 
 SSL *tcp_ssl_get_ssl(struct tcp_pcb *tcp) {
