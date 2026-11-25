@@ -476,11 +476,10 @@ static int tcp_ssl_outbuf_pump_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
 
   if (send_len) {
     NET_DEBUG("tcp_ssl_outbuf_pump_int: sending %d to network\n", send_len);
+    // The records are queued; lwIP retries the output itself, as on plain TCP
     err_t err = tcp_output(tcp);
-    // ERR_RTE (no route, e.g. Wi-Fi down) is retried like on the plain TCP path
-    if (err != ERR_OK && err != ERR_RTE) {
+    if (err != ERR_OK) {
       TCP_SSL_DEBUG("tcp_ssl_outbuf_pump_int: tcp_output err - %d\n", err);
-      return ERR_TCP_SSL_OUTPUT_FAILED;
     }
   }
   return send_len;

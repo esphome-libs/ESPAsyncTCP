@@ -441,7 +441,7 @@ size_t AsyncClient::add(const char* data, size_t size, uint8_t apiflags) {
       _tx_unacked_len += sent;
       return sent;
     }
-    _close();
+    _ssl_abort(sent);
     return 0;
   }
 #endif
@@ -520,11 +520,12 @@ void AsyncClient::_connected(std::shared_ptr<ACErrorTracker>& errorTracker, void
     if(_pcb_secure){
 #if ASYNC_TCP_SSL_BEARSSL
       const char *host_name = _hostname.length() > 0 ? _hostname.c_str() : NULL;
-      if(tcp_ssl_new_client_ex(_pcb, host_name, _ssl_params) < 0){
+      int ssl_err = tcp_ssl_new_client_ex(_pcb, host_name, _ssl_params);
 #else
-      if(tcp_ssl_new_client(_pcb) < 0){
+      int ssl_err = tcp_ssl_new_client(_pcb);
 #endif
-        _close();
+      if(ssl_err < 0){
+        _ssl_abort(ssl_err);
         return;
       }
       tcp_ssl_arg(_pcb, this);
