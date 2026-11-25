@@ -245,10 +245,10 @@ static SSL_CTX *tcp_ssl_ctx_new(SSL_CTX_PARAMS &params) {
   }
 
   ssl_ctx->_iobuf_in =
-      std::shared_ptr<unsigned char>(new unsigned char[params.iobuf_in_size],
+      std::shared_ptr<unsigned char>(new (std::nothrow) unsigned char[params.iobuf_in_size],
                                      std::default_delete<unsigned char[]>());
   ssl_ctx->_iobuf_out =
-      std::shared_ptr<unsigned char>(new unsigned char[params.iobuf_out_size],
+      std::shared_ptr<unsigned char>(new (std::nothrow) unsigned char[params.iobuf_out_size],
                                      std::default_delete<unsigned char[]>());
 
   if (!ssl_ctx->_iobuf_in || !ssl_ctx->_iobuf_out) {

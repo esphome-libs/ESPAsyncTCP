@@ -85,7 +85,7 @@ extern "C"{
 #include <tcp_axtls.h>
 
 #if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
-extern "C" const char *find_error_name(int err, const char **comment);
+extern "C" PGM_P async_tcp_find_error_name(int err);
 #endif
 
 #if ASYNC_TCP_SSL_ENABLED
@@ -1096,10 +1096,12 @@ void AsyncClient::ackPacket(struct pbuf * pb){
 const char * AsyncClient::errorToString(err_t error) {
 #if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
   if (error > 0) {
-    const char *comment = NULL;
-    const char *name = find_error_name(error, &comment);
+    PGM_P name = async_tcp_find_error_name(error);
     if (name) {
-      return name;
+      // Longest name is 31 chars; callers print the result with %s.
+      static char buf[32];
+      strncpy_P(buf, name, sizeof(buf) - 1);
+      return buf;
     }
   }
 #endif
