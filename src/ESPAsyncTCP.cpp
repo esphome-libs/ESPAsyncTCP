@@ -657,7 +657,7 @@ void AsyncClient::_sent(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
 #if ASYNC_TCP_SSL_ENABLED
   if (_pcb_secure){
 #if ASYNC_TCP_SSL_BEARSSL
-    if (!_ssl_flush(errorTracker, pcb, _rx_last_packet))
+    if (!_ssl_flush(errorTracker, pcb, millis()))
       return;
 #endif
     if (!_handshake_done)
