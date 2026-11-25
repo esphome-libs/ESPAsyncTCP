@@ -407,7 +407,8 @@ void AsyncClient::close(bool now){
   if(now) {
     ASYNC_TCP_DEBUG("close[%u]: AsyncClient 0x%" PRIXPTR "\n", getConnectionId(), uintptr_t(this));
     _close();
-  } else {
+  } else if(!_close_pcb) {
+    // Repeated calls keep the first deadline
     _close_pcb = true;
 #if ASYNC_TCP_SSL_ENABLED
     _close_requested_at = millis();
