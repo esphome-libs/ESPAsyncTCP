@@ -26,7 +26,8 @@ inline size_t asyncTcpSendQueued(AsyncClient *client, cbuf *queue) {
   if (!out)
     return 0;
   queue->peek(out.get(), available);
-  size_t sent = client->add(out.get(), available);
+  // `out` is freed on return, so plain TCP must copy it
+  size_t sent = client->add(out.get(), available, ASYNC_WRITE_FLAG_COPY);
   if (sent) {
     queue->remove(sent);
     client->send();
