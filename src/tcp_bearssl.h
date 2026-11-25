@@ -145,6 +145,8 @@ int tcp_ssl_free(struct tcp_pcb *tcp);
 int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p);
 int tcp_ssl_read_pending(struct tcp_pcb *tcp);
 
+// Returns the plaintext bytes the engine took; the caller sends the records
+// with tcp_ssl_outbuf_pump()
 int tcp_ssl_write(struct tcp_pcb *tcp, uint8_t *data, size_t len);
 int tcp_ssl_sndbuf(struct tcp_pcb *tcp);
 int tcp_ssl_outbuf_pump(struct tcp_pcb *tcp);

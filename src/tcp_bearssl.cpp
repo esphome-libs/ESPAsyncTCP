@@ -638,6 +638,7 @@ int tcp_ssl_sndbuf(struct tcp_pcb *tcp) {
   // The open record's free space, plus one more record of plaintext for each
   // full record's ciphertext (plaintext plus BearSSL's record overhead) that
   // fits in the TCP send buffer
+  static_assert(BR_SSL_BUFSIZE_OUTPUT > 16384, "BearSSL output buffer holds one full record");
   static constexpr size_t RECORD_OVERHEAD = BR_SSL_BUFSIZE_OUTPUT - 16384;
   size_t record_len = sendapp_len + tcp_ssl->ssl_ctx->_pending_send;
   size_t records = tcp_sndbuf(tcp) / (record_len + RECORD_OVERHEAD);
