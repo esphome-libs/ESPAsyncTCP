@@ -22,6 +22,7 @@
 #include "SyncClient.h"
 #include "ESPAsyncTCP.h"
 #include "cbuf.h"
+#include "AsyncQueuedSend.h"
 #include <interrupts.h>
 
 #define DEBUG_ESP_SYNC_CLIENT
@@ -254,26 +255,7 @@ bool SyncClient::stop(unsigned int maxWaitMs){
 size_t SyncClient::_sendBuffer(){
   if(_client == NULL || _tx_buffer == NULL)
     return 0;
-  size_t available = _tx_buffer->available();
-  if(!connected() || !_client->canSend() || available == 0)
-    return 0;
-  size_t sendable = _client->space();
-  if(sendable < available)
-    available= sendable;
-  char *out = new (std::nothrow) char[available];
-  if(out == NULL)
-    return 0;
-
-  // A TLS add() can take less; dequeue only what it took, before send(),
-  // which can tear the client down
-  _tx_buffer->peek(out, available);
-  size_t sent = _client->add(out, available);
-  if(sent){
-    _tx_buffer->remove(sent);
-    _client->send();
-  }
-  delete[] out;
-  return sent;
+  return asyncTcpSendQueued(_client, _tx_buffer);
 }
 
 void SyncClient::_onData(void *data, size_t len){
