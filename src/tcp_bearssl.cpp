@@ -162,6 +162,15 @@ static tcp_ssl_t *tcp_ssl_array = NULL;
 static tcp_ssl_t *tcp_ssl_hsptr = NULL;
 static os_timer_t handshake_timer = {0};
 static void tcp_ssl_handshake_pump(void *);
+static int tcp_ssl_read_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
+                            struct pbuf *p, int pbuf_offset);
+
+// Reports a failed handshake; the error callback aborts the connection
+static void tcp_ssl_handshake_fail(tcp_ssl_t *tcp_ssl, int err) {
+  if (tcp_ssl->on_error) {
+    tcp_ssl->on_error(tcp_ssl->arg, tcp_ssl->tcp, err);
+  }
+}
 
 uint8_t tcp_ssl_has_client() { return _tcp_ssl_has_client; }
 
@@ -719,29 +728,42 @@ static void tcp_ssl_handshake_pump(void *) {
           int ssl_error = br_ssl_engine_last_error(engine);
           TCP_SSL_DEBUG("tcp_ssl_handshake_pump: handshake failed (%d)\n",
                         ssl_error);
-          // The error callback aborts the connection
-          if (tcp_ssl_hsptr->on_error) {
-            tcp_ssl_hsptr->on_error(tcp_ssl_hsptr->arg, tcp_ssl_hsptr->tcp,
-                                    ssl_error);
-          }
+          tcp_ssl_handshake_fail(tcp_ssl_hsptr, ssl_error);
         } else if (state & BR_SSL_SENDAPP) {
           HS_DEBUG("tcp_ssl_handshake_pump: handshake successful\n");
-          tcp_ssl_hsptr->type = TCP_SSL_TYPE_CLIENT_HANDSHAKED;
-          if (tcp_ssl_hsptr->on_handshake) {
-            tcp_ssl_hsptr->on_handshake(tcp_ssl_hsptr->arg, tcp_ssl_hsptr->tcp,
-                                        tcp_ssl_hsptr->ssl);
+          tcp_ssl_t *tcp_ssl = tcp_ssl_hsptr;
+          struct tcp_pcb *tcp = tcp_ssl->tcp;
+          tcp_ssl->type = TCP_SSL_TYPE_CLIENT_HANDSHAKED;
+          // Records that arrived after Finished are application data; read
+          // them after the connect callback, before any newer TCP data
+          struct pbuf *rest = tcp_ssl->handshake;
+          tcp_ssl->handshake = NULL;
+          if (tcp_ssl->on_handshake) {
+            tcp_ssl->on_handshake(tcp_ssl->arg, tcp, tcp_ssl->ssl);
+          }
+          if (rest) {
+            HS_DEBUG("tcp_ssl_handshake_pump: left-over buffer %d\n", buflen);
+            // Skip if the connect callback closed the client
+            if (tcp_ssl_has(tcp)) {
+              int res = tcp_ssl_read_int(tcp, tcp_ssl, rest,
+                                         tcp_ssl->handshake_offset);
+              if (res < 0 && res != SSL_CLOSE_NOTIFY) {
+                tcp_ssl_handshake_fail(tcp_ssl, res);
+              }
+            }
+            pbuf_free(rest);
           }
         } else {
+          // Send the reply flight now rather than on the next poll
+          if (tcp_ssl_outbuf_pump_int(tcp_ssl_hsptr->tcp, tcp_ssl_hsptr) < 0) {
+            tcp_ssl_handshake_fail(tcp_ssl_hsptr, ERR_TCP_SSL_OUTPUT_FAILED);
+            break;
+          }
+          state = br_ssl_engine_current_state(engine);
           time_t execSpan = micros64() - startTS;
           if (execSpan > HANDSHAKE_RES * 1000)
             break;
           continue;
-        }
-        // Cannot take any more data at this stage
-        if (buflen) {
-          HS_DEBUG("tcp_ssl_handshake_pump: "
-                   "left-over buffer %d\n",
-                   buflen);
         }
         break;
       } else {
@@ -791,8 +813,8 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
     return SSL_CANNOT_READ;
   }
 
-  int pbuf_size = p->tot_len;
   if (tcp_ssl->type == TCP_SSL_TYPE_CLIENT_CONNECTED) {
+    int pbuf_size = p->tot_len;
     // We are in handshake stage
     // Computation may be heavy, do not process data here
     NET_DEBUG("tcp_ssl_read: handshake +%d\n", pbuf_size);
@@ -804,7 +826,20 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
     return pbuf_size;
   }
 
-  int pbuf_offset = 0;
+  int total_bytes = tcp_ssl_read_int(tcp, tcp_ssl, p, 0);
+  // Skip if the data callback closed the client
+  if (tcp_ssl_has(tcp))
+    tcp_recved(tcp, p->tot_len);
+  pbuf_free(p);
+  return total_bytes;
+}
+
+// Decrypts p from offset on and passes the data to on_data; does not free p
+static int tcp_ssl_read_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
+                            struct pbuf *p, int pbuf_offset) {
+  br_ssl_engine_context *engine = tcp_ssl->ssl_ctx->_eng;
+  unsigned state;
+  int pbuf_size = p->tot_len - pbuf_offset;
   int total_bytes = 0;
   bool pumped_for_progress = false;
   do {
@@ -834,7 +869,6 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
           tcp_ssl->on_data(tcp_ssl->arg, tcp, recv_buf, _recv_len);
           // The callback may have closed the client, which frees the engine
           if (!tcp_ssl_has(tcp)) {
-            pbuf_free(p);
             return SSL_CLOSE_NOTIFY;
           }
         }
@@ -867,9 +901,6 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
   } while (pbuf_size > 0);
 
   NET_DEBUG("tcp_ssl_read: processed %d / %d\n", pbuf_offset, p->tot_len);
-  tcp_recved(tcp, p->tot_len);
-  pbuf_free(p);
-
   return total_bytes;
 }
 

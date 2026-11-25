@@ -588,12 +588,13 @@ void AsyncClient::_ssl_error(int err){
 }
 
 #if ASYNC_TCP_SSL_BEARSSL
-// Flushes pending TLS records; aborts the connection on any error
+// Flushes pending TLS records; aborts the connection on any error.
+// Handshake bytes are not tracked: _sent ignores their acks.
 int AsyncClient::_ssl_pump(tcp_pcb* pcb, uint32_t sent_at){
   int pumped = tcp_ssl_outbuf_pump(pcb);
   if (pumped < 0) {
     abort();
-  } else if (pumped > 0) {
+  } else if (pumped > 0 && _handshake_done) {
     _pcb_busy = true;
     _pcb_sent_at = sent_at;
     _tx_unacked_len += pumped;
