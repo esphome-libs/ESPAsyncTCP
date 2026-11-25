@@ -26,7 +26,7 @@
 #include <core_esp8266_features.h>
 #include <async_config.h>
 
-#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
+#if ASYNC_TCP_SSL_ENABLED
 
 #include "user_interface.h"
 
@@ -131,14 +131,6 @@ extern void thunk_br_ssl_engine_sendrec_ack(br_ssl_engine_context *cc,
 #define NET_DEBUG(...)
 #endif
 
-static uint8_t _tcp_ssl_has_client = 0;
-
-SSL_CTX *tcp_ssl_new_server_ctx(const char *cert, const char *private_key_file,
-                                const char *password) {
-  TCP_SSL_DEBUG("Unimplemented\n");
-  return NULL;
-}
-
 struct tcp_ssl_pcb {
   struct tcp_pcb *tcp;
   SSL_CTX *ssl_ctx;
@@ -155,7 +147,6 @@ struct tcp_ssl_pcb {
   tcp_ssl_data_cb_t on_data;
   tcp_ssl_handshake_cb_t on_handshake;
   tcp_ssl_error_cb_t on_error;
-  tcp_ssl_cert_cb_t on_cert;
   struct tcp_ssl_pcb *next;
 };
 
@@ -178,8 +169,6 @@ static void tcp_ssl_handshake_fail(tcp_ssl_t *tcp_ssl, int err) {
     tcp_ssl->on_error(tcp_ssl->arg, tcp_ssl->tcp, err);
   }
 }
-
-uint8_t tcp_ssl_has_client() { return _tcp_ssl_has_client; }
 
 #define _ASYNCTCP_STRINGIFY(x) #x
 #define ASYNCTCP_STRINGIFY(x) _ASYNCTCP_STRINGIFY(x)
@@ -260,12 +249,8 @@ static SSL_CTX *tcp_ssl_ctx_new(SSL_CTX_PARAMS &params) {
     params.iobuf_out_size = BEARSSL_DEFAULT_OUT_BUF_SIZE;
   }
 
-  ssl_ctx->_iobuf_in =
-      std::shared_ptr<unsigned char>(new unsigned char[params.iobuf_in_size],
-                                     std::default_delete<unsigned char[]>());
-  ssl_ctx->_iobuf_out =
-      std::shared_ptr<unsigned char>(new unsigned char[params.iobuf_out_size],
-                                     std::default_delete<unsigned char[]>());
+  ssl_ctx->_iobuf_in.reset(new (std::nothrow) unsigned char[params.iobuf_in_size]);
+  ssl_ctx->_iobuf_out.reset(new (std::nothrow) unsigned char[params.iobuf_out_size]);
 
   if (!ssl_ctx->_iobuf_in || !ssl_ctx->_iobuf_out) {
     TCP_SSL_DEBUG("ssl_ctx_new: failed to allocate io buffers\n");
@@ -495,11 +480,6 @@ static int tcp_ssl_outbuf_pump_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
   return send_len;
 }
 
-int tcp_ssl_new_client(struct tcp_pcb *tcp, const char *hostName) {
-  SSL_CTX_PARAMS params{};
-  return tcp_ssl_new_client_ex(tcp, hostName, params);
-}
-
 int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
                           SSL_CTX_PARAMS &params) {
   if (!tcp) {
@@ -544,11 +524,6 @@ int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
   return 0;
 }
 
-int tcp_ssl_new_server(struct tcp_pcb *tcp, SSL_CTX *ssl_ctx) {
-  TCP_SSL_DEBUG("Unimplemented\n");
-  return -1;
-}
-
 static void tcp_ssl_release(tcp_ssl_t *cur) {
   if (cur->handshake) {
     pbuf_free(cur->handshake);
@@ -561,9 +536,6 @@ static void tcp_ssl_release(tcp_ssl_t *cur) {
   }
   if ((cur->type & TCP_SSL_TYPE_CLIENT_ALL) && cur->ssl_ctx) {
     tcp_ssl_ctx_free(cur->ssl_ctx);
-  }
-  if (cur->type & TCP_SSL_TYPE_SERVER_ALL) {
-    _tcp_ssl_has_client = 0;
   }
   free(cur);
 }
@@ -976,19 +948,6 @@ SSL *tcp_ssl_get_ssl(struct tcp_pcb *tcp) {
 
 bool tcp_ssl_has(struct tcp_pcb *tcp) { return tcp_ssl_get(tcp) != NULL; }
 
-int tcp_ssl_is_server(struct tcp_pcb *tcp) {
-  if (!tcp) {
-    return ERR_TCP_SSL_INVALID_TCP;
-  }
-
-  tcp_ssl_t *tcp_ssl = tcp_ssl_get(tcp);
-  if (!tcp_ssl) {
-    TCP_SSL_DEBUG("tcp_ssl_write: tcp_ssl is NULL\n");
-    return ERR_TCP_SSL_INVALID_SSL_REC;
-  }
-  return tcp_ssl->type;
-}
-
 void tcp_ssl_arg(struct tcp_pcb *tcp, void *arg) {
   tcp_ssl_t *item = tcp_ssl_get(tcp);
   if (item) {
@@ -1014,13 +973,6 @@ void tcp_ssl_err(struct tcp_pcb *tcp, tcp_ssl_error_cb_t arg) {
   tcp_ssl_t *item = tcp_ssl_get(tcp);
   if (item) {
     item->on_error = arg;
-  }
-}
-
-void tcp_ssl_cert(struct tcp_pcb *tcp, tcp_ssl_cert_cb_t arg) {
-  tcp_ssl_t *item = tcp_ssl_get(tcp);
-  if (item) {
-    item->on_cert = arg;
   }
 }
 
