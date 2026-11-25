@@ -277,6 +277,9 @@ class AsyncServer {
     uint16_t _port;
     IPAddress _addr;
     bool _noDelay;
+#if ASYNC_TCP_SSL_ENABLED
+    bool _secure_requested = false;
+#endif
     tcp_pcb* _pcb;
     AcConnectHandler _connect_cb;
     void* _connect_cb_arg;
@@ -293,8 +296,11 @@ class AsyncServer {
 #if ASYNC_TCP_SSL_ENABLED
     // TLS server mode is not supported; kept so ESPAsyncWebServer compiles with TLS enabled.
     void onSslFileRequest(AcSSlFileHandler cb, void* arg) { (void)cb; (void)arg; }
+    // There is no TLS server; refuse to listen at all rather than serve plaintext
     void beginSecure(const char *cert, const char *private_key_file, const char *password) {
       (void)cert; (void)private_key_file; (void)password;
+      _secure_requested = true;
+      end();
     }
 #endif
     void begin();

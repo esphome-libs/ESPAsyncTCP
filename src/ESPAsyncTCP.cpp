@@ -1184,6 +1184,10 @@ void AsyncServer::onClient(AcConnectHandler cb, void* arg){
 void AsyncServer::begin(){
   if(_pcb)
     return;
+#if ASYNC_TCP_SSL_ENABLED
+  if(_secure_requested)
+    return;
+#endif
 
   int8_t err;
   tcp_pcb* pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
