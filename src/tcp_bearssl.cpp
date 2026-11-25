@@ -147,7 +147,6 @@ struct tcp_ssl_pcb {
   tcp_ssl_data_cb_t on_data;
   tcp_ssl_handshake_cb_t on_handshake;
   tcp_ssl_error_cb_t on_error;
-  tcp_ssl_cert_cb_t on_cert;
   struct tcp_ssl_pcb *next;
 };
 
@@ -469,11 +468,6 @@ static int tcp_ssl_outbuf_pump_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
     }
   }
   return send_len;
-}
-
-int tcp_ssl_new_client(struct tcp_pcb *tcp, const char *hostName) {
-  SSL_CTX_PARAMS params{};
-  return tcp_ssl_new_client_ex(tcp, hostName, params);
 }
 
 int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
@@ -909,19 +903,6 @@ SSL *tcp_ssl_get_ssl(struct tcp_pcb *tcp) {
 
 bool tcp_ssl_has(struct tcp_pcb *tcp) { return tcp_ssl_get(tcp) != NULL; }
 
-int tcp_ssl_is_server(struct tcp_pcb *tcp) {
-  if (!tcp) {
-    return ERR_TCP_SSL_INVALID_TCP;
-  }
-
-  tcp_ssl_t *tcp_ssl = tcp_ssl_get(tcp);
-  if (!tcp_ssl) {
-    TCP_SSL_DEBUG("tcp_ssl_write: tcp_ssl is NULL\n");
-    return ERR_TCP_SSL_INVALID_SSL_REC;
-  }
-  return tcp_ssl->type;
-}
-
 void tcp_ssl_arg(struct tcp_pcb *tcp, void *arg) {
   tcp_ssl_t *item = tcp_ssl_get(tcp);
   if (item) {
@@ -947,13 +928,6 @@ void tcp_ssl_err(struct tcp_pcb *tcp, tcp_ssl_error_cb_t arg) {
   tcp_ssl_t *item = tcp_ssl_get(tcp);
   if (item) {
     item->on_error = arg;
-  }
-}
-
-void tcp_ssl_cert(struct tcp_pcb *tcp, tcp_ssl_cert_cb_t arg) {
-  tcp_ssl_t *item = tcp_ssl_get(tcp);
-  if (item) {
-    item->on_cert = arg;
   }
 }
 

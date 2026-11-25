@@ -63,7 +63,6 @@ class X509List;
 #define TCP_SSL_TYPE_CLIENT_ALL 0x0F
 #define TCP_SSL_TYPE_CLIENT_CONNECTED 0x01
 #define TCP_SSL_TYPE_CLIENT_HANDSHAKED 0x02
-#define TCP_SSL_TYPE_SERVER_ALL 0xF0
 
 // XXX: this is a dumb c/p from WiFiClientSecure **cpp**
 extern "C" {
@@ -116,8 +115,6 @@ typedef void (*tcp_ssl_data_cb_t)(void *arg, struct tcp_pcb *tcp, uint8_t *data,
 typedef void (*tcp_ssl_handshake_cb_t)(void *arg, struct tcp_pcb *tcp,
                                        SSL *ssl);
 typedef void (*tcp_ssl_error_cb_t)(void *arg, struct tcp_pcb *tcp, int error);
-typedef int (*tcp_ssl_cert_cb_t)(void *arg, struct tcp_pcb *tcp, void *dn_hash,
-                                 size_t dn_hash_len, uint8_t **buf);
 
 #define SSL_BUF_OVERHEAD 325
 #define SSL_BUF_MINIMUM_DATALEN 512
@@ -140,11 +137,9 @@ typedef int (*tcp_ssl_cert_cb_t)(void *arg, struct tcp_pcb *tcp, void *dn_hash,
 #define BEARSSL_DEFAULT_IN_BUF_SIZE SSL_DEFAULT_BUF_SIZE
 #define BEARSSL_DEFAULT_OUT_BUF_SIZE SSL_MINIMUM_BUF_SIZE
 
-int tcp_ssl_new_client(struct tcp_pcb *tcp, const char *hostName);
 int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
                           SSL_CTX_PARAMS &params);
 
-int tcp_ssl_is_server(struct tcp_pcb *tcp);
 
 int tcp_ssl_free(struct tcp_pcb *tcp);
 int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p);
@@ -158,7 +153,6 @@ void tcp_ssl_arg(struct tcp_pcb *tcp, void *arg);
 void tcp_ssl_data(struct tcp_pcb *tcp, tcp_ssl_data_cb_t arg);
 void tcp_ssl_handshake(struct tcp_pcb *tcp, tcp_ssl_handshake_cb_t arg);
 void tcp_ssl_err(struct tcp_pcb *tcp, tcp_ssl_error_cb_t arg);
-void tcp_ssl_cert(struct tcp_pcb *tcp, tcp_ssl_cert_cb_t arg);
 
 SSL *tcp_ssl_get_ssl(struct tcp_pcb *tcp);
 void tcp_ssl_ctx_free(SSL_CTX *ssl_ctx);
