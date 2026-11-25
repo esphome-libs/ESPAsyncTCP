@@ -17,7 +17,12 @@ inline size_t asyncTcpSendQueued(AsyncClient *client, cbuf *queue) {
   size_t sendable = client->space();
   if (sendable < available)
     available = sendable;
+  // Under heap pressure fall back to smaller chunks so the queue still drains
   std::unique_ptr<char[]> out(new (std::nothrow) char[available]);
+  while (!out && available > 64) {
+    available /= 2;
+    out.reset(new (std::nothrow) char[available]);
+  }
   if (!out)
     return 0;
   queue->peek(out.get(), available);
