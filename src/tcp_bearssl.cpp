@@ -162,6 +162,14 @@ static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl);
 // Record whose data callback is running, so tcp_ssl_free() defers its release
 static tcp_ssl_t *tcp_ssl_in_data_cb = NULL;
 
+// Reports an error during the handshake or in records read right after it;
+// AsyncClient closes cleanly on SSL_CLOSE_NOTIFY and aborts otherwise
+static void tcp_ssl_handshake_fail(tcp_ssl_t *tcp_ssl, int err) {
+  if (tcp_ssl->on_error) {
+    tcp_ssl->on_error(tcp_ssl->arg, tcp_ssl->tcp, err);
+  }
+}
+
 #define _ASYNCTCP_STRINGIFY(x) #x
 #define ASYNCTCP_STRINGIFY(x) _ASYNCTCP_STRINGIFY(x)
 
@@ -711,29 +719,47 @@ static void tcp_ssl_handshake_pump(void *) {
           int ssl_error = br_ssl_engine_last_error(engine);
           TCP_SSL_DEBUG("tcp_ssl_handshake_pump: handshake failed (%d)\n",
                         ssl_error);
-          // The error callback aborts the connection
-          if (tcp_ssl_hsptr->on_error) {
-            tcp_ssl_hsptr->on_error(tcp_ssl_hsptr->arg, tcp_ssl_hsptr->tcp,
-                                    ssl_error);
-          }
+          tcp_ssl_handshake_fail(tcp_ssl_hsptr, ssl_error);
         } else if (state & BR_SSL_SENDAPP) {
           HS_DEBUG("tcp_ssl_handshake_pump: handshake successful\n");
-          tcp_ssl_hsptr->type = TCP_SSL_TYPE_CLIENT_HANDSHAKED;
-          if (tcp_ssl_hsptr->on_handshake) {
-            tcp_ssl_hsptr->on_handshake(tcp_ssl_hsptr->arg, tcp_ssl_hsptr->tcp,
-                                        tcp_ssl_hsptr->ssl);
+          tcp_ssl_t *tcp_ssl = tcp_ssl_hsptr;
+          struct tcp_pcb *tcp = tcp_ssl->tcp;
+          tcp_ssl->type = TCP_SSL_TYPE_CLIENT_HANDSHAKED;
+          // Records that arrived after Finished are application data; read
+          // them after the connect callback, before any newer TCP data
+          struct pbuf *rest = tcp_ssl->handshake;
+          tcp_ssl->handshake = NULL;
+          if (tcp_ssl->on_handshake) {
+            tcp_ssl->on_handshake(tcp_ssl->arg, tcp, tcp_ssl->ssl);
+          }
+          if (rest) {
+            HS_DEBUG("tcp_ssl_handshake_pump: left-over buffer %d\n", buflen);
+            // Skip if the connect callback closed the client
+            if (tcp_ssl_has(tcp)) {
+              tcp_ssl->pending = rest;
+              tcp_ssl->pending_offset = tcp_ssl->handshake_offset;
+              // tcp_recved already ran when the handshake data was buffered
+              tcp_ssl->pending_acked = rest->tot_len;
+              int res = tcp_ssl_consume(tcp, tcp_ssl);
+              // A close_notify with the record still there came from the peer
+              if (res < 0 && tcp_ssl_has(tcp)) {
+                tcp_ssl_handshake_fail(tcp_ssl, res);
+              }
+            } else {
+              pbuf_free(rest);
+            }
           }
         } else {
+          // Send the reply flight now rather than on the next poll
+          if (tcp_ssl_outbuf_pump_int(tcp_ssl_hsptr->tcp, tcp_ssl_hsptr) < 0) {
+            tcp_ssl_handshake_fail(tcp_ssl_hsptr, ERR_TCP_SSL_OUTPUT_FAILED);
+            break;
+          }
+          state = br_ssl_engine_current_state(engine);
           time_t execSpan = micros64() - startTS;
           if (execSpan > HANDSHAKE_RES * 1000)
             break;
           continue;
-        }
-        // Cannot take any more data at this stage
-        if (buflen) {
-          HS_DEBUG("tcp_ssl_handshake_pump: "
-                   "left-over buffer %d\n",
-                   buflen);
         }
         break;
       } else {
@@ -783,8 +809,8 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
     return SSL_CANNOT_READ;
   }
 
-  int pbuf_size = p->tot_len;
   if (tcp_ssl->type == TCP_SSL_TYPE_CLIENT_CONNECTED) {
+    int pbuf_size = p->tot_len;
     // We are in handshake stage
     // Computation may be heavy, do not process data here
     NET_DEBUG("tcp_ssl_read: handshake +%d\n", pbuf_size);
