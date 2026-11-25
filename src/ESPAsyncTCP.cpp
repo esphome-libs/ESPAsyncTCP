@@ -911,8 +911,12 @@ void AsyncClient::_s_ssl_error(void *arg, struct tcp_pcb *tcp, int err){
   ASYNC_TCP_DEBUG("_ssl_error[%u] err = %d\n", c->getACErrorTracker()->getConnectionId(), err);
 #endif
 #if ASYNC_TCP_SSL_BEARSSL
-  // The BearSSL handshake runs from a timer, so the connection is torn down here
-  c->_ssl_abort(err);
+  // The BearSSL handshake runs from a timer, so the connection is torn down here;
+  // a close_notify that came with the handshake is a clean close
+  if(err == SSL_CLOSE_NOTIFY)
+    c->_close();
+  else
+    c->_ssl_abort(err);
 #else
   // axTLS returns the error to _recv, which tears the connection down
   c->_ssl_error(err);
