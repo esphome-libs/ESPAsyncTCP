@@ -168,6 +168,8 @@ static tcp_ssl_t *tcp_ssl_hsptr = NULL;
 static os_timer_t handshake_timer = {0};
 static void tcp_ssl_handshake_pump(void *);
 static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl);
+// Record whose data callback is running, so tcp_ssl_free() defers its release
+static tcp_ssl_t *tcp_ssl_in_data_cb = NULL;
 
 uint8_t tcp_ssl_has_client() { return _tcp_ssl_has_client; }
 
@@ -539,6 +541,25 @@ int tcp_ssl_new_server(struct tcp_pcb *tcp, SSL_CTX *ssl_ctx) {
   return -1;
 }
 
+static void tcp_ssl_release(tcp_ssl_t *cur) {
+  if (cur->handshake) {
+    pbuf_free(cur->handshake);
+  }
+  if (cur->pending) {
+    pbuf_free(cur->pending);
+  }
+  if (cur->ssl) {
+    tcp_ssl_free_ssl(cur->ssl);
+  }
+  if ((cur->type & TCP_SSL_TYPE_CLIENT_ALL) && cur->ssl_ctx) {
+    tcp_ssl_ctx_free(cur->ssl_ctx);
+  }
+  if (cur->type & TCP_SSL_TYPE_SERVER_ALL) {
+    _tcp_ssl_has_client = 0;
+  }
+  free(cur);
+}
+
 int tcp_ssl_free(struct tcp_pcb *tcp) {
   if (!tcp) {
     TCP_SSL_DEBUG("tcp_ssl_free: invalid tcp!\n");
@@ -566,28 +587,19 @@ int tcp_ssl_free(struct tcp_pcb *tcp) {
   if (cur == tcp_ssl_hsptr) {
     tcp_ssl_hsptr = cur->next ? cur->next : tcp_ssl_array;
   }
-  if (cur->handshake) {
-    pbuf_free(cur->handshake);
-  }
-  if (cur->pending) {
-    pbuf_free(cur->pending);
-  }
-  if (cur->ssl) {
-    tcp_ssl_free_ssl(cur->ssl);
-  }
-  if ((cur->type & TCP_SSL_TYPE_CLIENT_ALL) && cur->ssl_ctx) {
-    tcp_ssl_ctx_free(cur->ssl_ctx);
-  }
-  if (cur->type & TCP_SSL_TYPE_SERVER_ALL) {
-    _tcp_ssl_has_client = 0;
-  }
-  free(cur);
-
   if (!tcp_ssl_array) {
     os_timer_disarm(&handshake_timer);
   }
+  // The data callback is still reading from this record's buffers; the read
+  // loop releases it once the callback returns
+  if (cur == tcp_ssl_in_data_cb) {
+    tcp_ssl_in_data_cb = NULL;
+    return 0;
+  }
+  tcp_ssl_release(cur);
   return 0;
 }
+
 
 int tcp_ssl_write(struct tcp_pcb *tcp, uint8_t *data, size_t len) {
   if (!tcp) {
@@ -867,9 +879,14 @@ static int tcp_ssl_read_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
         READ_DEBUG("tcp_ssl_read: app data (%d)\n", _recv_len);
         progress = true;
         if (tcp_ssl->on_data) {
+          tcp_ssl_t *outer = tcp_ssl_in_data_cb;
+          tcp_ssl_in_data_cb = tcp_ssl;
           tcp_ssl->on_data(tcp_ssl->arg, tcp, recv_buf, _recv_len);
-          // The callback may have closed the client, which frees the engine
-          if (!tcp_ssl_has(tcp)) {
+          // tcp_ssl_free() clears the marker when the callback closed the client
+          bool closed = tcp_ssl_in_data_cb != tcp_ssl;
+          tcp_ssl_in_data_cb = outer;
+          if (closed) {
+            tcp_ssl_release(tcp_ssl);
             return SSL_CLOSE_NOTIFY;
           }
         }
