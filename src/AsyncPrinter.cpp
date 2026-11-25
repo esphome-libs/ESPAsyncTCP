@@ -20,6 +20,7 @@
 */
 
 #include "AsyncPrinter.h"
+#include "AsyncQueuedSend.h"
 
 AsyncPrinter::AsyncPrinter()
   : _client(NULL)
@@ -146,12 +147,18 @@ size_t AsyncPrinter::write(const uint8_t *data, size_t len){
   size_t toSend = len;
   while(_tx_buffer->room() < toSend){
     toWrite = _tx_buffer->room();
-    _tx_buffer->write((const char*)data, toWrite);
+    // Continue from the first byte not queued yet
+    _tx_buffer->write((const char*)(data + (len - toSend)), toWrite);
     while(connected() && !_client->canSend())
       delay(0);
     if(!connected())
       return 0; // or len - toSend;
-    _sendBuffer();
+    // No progress (e.g. lwIP out of memory): yield before trying again
+    if(!_sendBuffer())
+      delay(0);
+    // A disconnect while sending or yielding frees the queue
+    if(_tx_buffer == NULL || !connected())
+      return 0;
     toSend -= toWrite;
   }
   _tx_buffer->write((const char*)(data+(len - toSend)), toSend);
@@ -171,21 +178,9 @@ void AsyncPrinter::close(){
 }
 
 size_t AsyncPrinter::_sendBuffer(){
-  size_t available = _tx_buffer->available();
-  if(!connected() || !_client->canSend() || available == 0)
+  if(_client == NULL || _tx_buffer == NULL)
     return 0;
-  size_t sendable = _client->space();
-  if(sendable < available)
-    available= sendable;
-  char *out = new (std::nothrow) char[available];
-  if (out == NULL) {
-    panic(); // Connection should be aborted instead
-  }
-
-  _tx_buffer->read(out, available);
-  size_t sent = _client->write(out, available);
-  delete out;
-  return sent;
+  return asyncTcpSendQueued(_client, _tx_buffer);
 }
 
 void AsyncPrinter::_onData(void *data, size_t len){

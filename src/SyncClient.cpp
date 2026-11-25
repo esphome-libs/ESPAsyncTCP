@@ -22,6 +22,7 @@
 #include "SyncClient.h"
 #include "ESPAsyncTCP.h"
 #include "cbuf.h"
+#include "AsyncQueuedSend.h"
 #include <interrupts.h>
 
 #define DEBUG_ESP_SYNC_CLIENT
@@ -254,20 +255,7 @@ bool SyncClient::stop(unsigned int maxWaitMs){
 size_t SyncClient::_sendBuffer(){
   if(_client == NULL || _tx_buffer == NULL)
     return 0;
-  size_t available = _tx_buffer->available();
-  if(!connected() || !_client->canSend() || available == 0)
-    return 0;
-  size_t sendable = _client->space();
-  if(sendable < available)
-    available= sendable;
-  char *out = new (std::nothrow) char[available];
-  if(out == NULL)
-    return 0;
-
-  _tx_buffer->read(out, available);
-  size_t sent = _client->write(out, available);
-  delete[] out;
-  return sent;
+  return asyncTcpSendQueued(_client, _tx_buffer);
 }
 
 void SyncClient::_onData(void *data, size_t len){
@@ -342,12 +330,18 @@ size_t SyncClient::write(const uint8_t *data, size_t len){
   size_t toSend = len;
   while(_tx_buffer->room() < toSend){
     toWrite = _tx_buffer->room();
-    _tx_buffer->write((const char*)data, toWrite);
+    // Continue from the first byte not queued yet
+    _tx_buffer->write((const char*)(data + (len - toSend)), toWrite);
     while(connected() && !_client->canSend())
       delay(0);
     if(!connected())
       return 0;
-    _sendBuffer();
+    // No progress (e.g. lwIP out of memory): yield before trying again
+    if(!_sendBuffer())
+      delay(0);
+    // A disconnect while sending or yielding frees the queue
+    if(_tx_buffer == NULL || !connected())
+      return 0;
     toSend -= toWrite;
   }
   _tx_buffer->write((const char*)(data+(len - toSend)), toSend);

@@ -195,6 +195,9 @@ AsyncClient::AsyncClient(tcp_pcb* pcb):
 #endif
   , _pcb_sent_at(0)
   , _close_pcb(false)
+#if ASYNC_TCP_SSL_ENABLED
+  , _close_requested_at(0)
+#endif
   , _ack_pcb(true)
   , _tx_unacked_len(0)
   , _tx_acked_len(0)
@@ -273,7 +276,8 @@ bool AsyncClient::connect(IPAddress ip, uint16_t port){
   // A fresh tracker per connection: an abort outside a callback (timer, send())
   // leaves ERR_ABRT behind that must not reach the next connection's callbacks
   _resetErrorTracker();
-  // Nothing of a previous connection is still in flight
+  // Nothing of a previous connection is still in flight or waiting to close
+  _close_pcb = false;
   _tx_unacked_len = 0;
   _tx_acked_len = 0;
 
@@ -294,7 +298,11 @@ bool AsyncClient::connect(const char* host, uint16_t port, bool secure){
 #else
 bool AsyncClient::connect(const char* host, uint16_t port){
 #endif
+  if (_pcb) //already connected
+    return false;
   IPAddress addr;
+  // A new attempt starts without a close request left from an old connection
+  _close_pcb = false;
 #if ASYNC_TCP_SSL_ENABLED
   _hostname = host;
 #endif
@@ -382,8 +390,12 @@ void AsyncClient::close(bool now){
   if(now) {
     ASYNC_TCP_DEBUG("close[%u]: AsyncClient 0x%" PRIXPTR "\n", getConnectionId(), uintptr_t(this));
     _close();
-  } else {
+  } else if(!_close_pcb) {
+    // Repeated calls keep the first deadline; connect() clears a request left from an old connection
     _close_pcb = true;
+#if ASYNC_TCP_SSL_ENABLED
+    _close_requested_at = millis();
+#endif
   }
 }
 
@@ -421,17 +433,26 @@ size_t AsyncClient::add(const char* data, size_t size, uint8_t apiflags) {
     return 0;
 #if ASYNC_TCP_SSL_ENABLED
   if(_pcb_secure){
-    int sent = tcp_ssl_write(_pcb, (uint8_t*)data, size);
-    if(sent >= 0){
-      if (sent > 0) {
-        _pcb_busy = true;
-        _pcb_sent_at = millis();
+    // Returns plaintext accepted; _ssl_pump counts the ciphertext handed to lwIP
+    uint32_t now = millis();
+    size_t accepted = 0;
+    while(true){
+      int sent = tcp_ssl_write(_pcb, (uint8_t*)data + accepted, size - accepted);
+      if(sent < 0){
+        _ssl_abort(sent);
+        return 0;
       }
-      _tx_unacked_len += sent;
-      return sent;
+      accepted += sent;
+      // A partial record waits for send(); a full one must reach TCP before
+      // the engine takes more data
+      if(accepted == size && !tcp_ssl_has_output(_pcb))
+        return accepted;
+      int pumped = _ssl_pump(_pcb, now);
+      if(pumped < 0)
+        return 0;
+      if(accepted == size || pumped == 0)
+        return accepted;
     }
-    _ssl_abort(sent);
-    return 0;
   }
 #endif
   size_t will_send = (room < size) ? room : size;
@@ -526,6 +547,8 @@ void AsyncClient::_connected(std::shared_ptr<ACErrorTracker>& errorTracker, void
 
 void AsyncClient::_close(){
   if(_pcb) {
+    // Only a connection actually torn down settles its deferred close
+    _close_pcb = false;
 #if ASYNC_TCP_SSL_ENABLED
     if(_pcb_secure){
       tcp_ssl_free(_pcb);
@@ -763,8 +786,25 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
 
   // Close requested
   if(_close_pcb){
-    ASYNC_TCP_DEBUG("_poll[%u]: Process _close_pcb.\n", errorTracker->getConnectionId() );
+    // Cleared first, so a teardown in the pump cannot close a later connection
     _close_pcb = false;
+#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
+    // Wait until buffered TLS records reached TCP and the peer acknowledged them, so
+    // the last records (e.g. an MQTT DISCONNECT) are not lost when the connection
+    // closes; give up once the ack timeout has passed since close() was called
+    if(_pcb_secure && _handshake_done){
+      uint32_t now = millis();
+      if(_ssl_pump(pcb, now) < 0)
+        return;
+      // lwIP's own queues: the byte counter can still hold unacked handshake bytes
+      bool pending = tcp_ssl_has_output(pcb) || pcb->unsent != NULL || pcb->unacked != NULL;
+      if(pending && (!_ack_timeout || (now - _close_requested_at) < _ack_timeout)){
+        _close_pcb = true;
+        return;
+      }
+    }
+#endif
+    ASYNC_TCP_DEBUG("_poll[%u]: Process _close_pcb.\n", errorTracker->getConnectionId() );
     _close();
     return;
   }
@@ -807,12 +847,17 @@ void AsyncClient::_dns_found(struct ip_addr *ipaddr){
 void AsyncClient::_dns_found(const ip_addr *ipaddr){
 #endif
   if(ipaddr){
+    // connect() starts from a clean state; keep a close requested during the lookup
+    bool close_requested = _close_pcb;
 #if ASYNC_TCP_SSL_ENABLED
+    uint32_t close_requested_at = _close_requested_at;
     const char *host = _hostname.length() > 0 ? _hostname.c_str() : NULL;
     connect(ipaddr, _connect_port, _pcb_secure, host);
+    _close_requested_at = close_requested_at;
 #else
     connect(ipaddr, _connect_port);
 #endif
+    _close_pcb = _close_pcb || close_requested;
   } else {
     if(_error_cb)
       _error_cb(_error_cb_arg, this, ASYNC_TCP_ERROR_DNS_FAILED);

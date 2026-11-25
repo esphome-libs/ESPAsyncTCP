@@ -617,8 +617,8 @@ int tcp_ssl_write(struct tcp_pcb *tcp, uint8_t *data, size_t len) {
     if (sendapp_len == to_send) {
       // when app buffer is filled, flush is done automatically
       ctx->_pending_send = 0;
-      return tcp_ssl_outbuf_pump_int(tcp, tcp_ssl);
     }
+    return to_send;
   }
   return 0;
 }
@@ -640,9 +640,23 @@ int tcp_ssl_sndbuf(struct tcp_pcb *tcp) {
   }
 
   size_t sendapp_len = 0;
-  br_ssl_engine_sendapp_buf(engine, &sendapp_len);
-  size_t tcp_len = tcp_sndbuf(tcp);
-  return sendapp_len < tcp_len ? sendapp_len : tcp_len;
+  if (!br_ssl_engine_sendapp_buf(engine, &sendapp_len)) {
+    return 0;
+  }
+  // The open record's free space, plus one more record of plaintext for each
+  // full record's ciphertext (plaintext plus BearSSL's record overhead) that
+  // fits in the TCP send buffer
+  static_assert(BR_SSL_BUFSIZE_OUTPUT > 16384, "BearSSL output buffer holds one full record");
+  static constexpr size_t RECORD_OVERHEAD = BR_SSL_BUFSIZE_OUTPUT - 16384;
+  size_t record_len = sendapp_len + tcp_ssl->ssl_ctx->_pending_send;
+  size_t records = tcp_sndbuf(tcp) / (record_len + RECORD_OVERHEAD);
+  return sendapp_len + records * record_len;
+}
+
+bool tcp_ssl_has_output(struct tcp_pcb *tcp) {
+  tcp_ssl_t *tcp_ssl = tcp_ssl_get(tcp);
+  return tcp_ssl &&
+         (br_ssl_engine_current_state(tcp_ssl->ssl_ctx->_eng) & BR_SSL_SENDREC);
 }
 
 int tcp_ssl_outbuf_pump(struct tcp_pcb *tcp) {
