@@ -296,7 +296,8 @@ bool AsyncClient::connect(IPAddress ip, uint16_t port){
   // A fresh tracker per connection: an abort outside a callback (timer, send())
   // leaves ERR_ABRT behind that must not reach the next connection's callbacks
   _resetErrorTracker();
-  // Nothing of a previous connection is still in flight
+  // Nothing of a previous connection is still in flight or waiting to close
+  _close_pcb = false;
   _tx_unacked_len = 0;
   _tx_acked_len = 0;
 
@@ -407,8 +408,8 @@ void AsyncClient::close(bool now){
   if(now) {
     ASYNC_TCP_DEBUG("close[%u]: AsyncClient 0x%" PRIXPTR "\n", getConnectionId(), uintptr_t(this));
     _close();
-  } else if(!_close_pcb) {
-    // Repeated calls keep the first deadline
+  } else if(_pcb && !_close_pcb) {
+    // Repeated calls keep the first deadline; without a connection there is nothing to close
     _close_pcb = true;
 #if ASYNC_TCP_SSL_ENABLED
     _close_requested_at = millis();
