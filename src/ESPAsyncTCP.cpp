@@ -293,6 +293,9 @@ bool AsyncClient::connect(IPAddress ip, uint16_t port){
   // A fresh tracker per connection: an abort outside a callback (timer, send())
   // leaves ERR_ABRT behind that must not reach the next connection's callbacks
   _resetErrorTracker();
+  // Nothing of a previous connection is still in flight
+  _tx_unacked_len = 0;
+  _tx_acked_len = 0;
 
   tcp_setprio(pcb, TCP_PRIO_MIN);
 #if ASYNC_TCP_SSL_ENABLED
@@ -718,6 +721,11 @@ void AsyncClient::_recv(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
 
   if(pb == NULL){
     ASYNC_TCP_DEBUG("_recv[%u]: pb == NULL! Closing... %ld\n", errorTracker->getConnectionId(), err);
+#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
+    // Deliver TLS input still held back behind output before closing
+    if(_pcb_secure && !_ssl_flush(errorTracker, pcb, millis()))
+      return;
+#endif
     _close();
     return;
   }
