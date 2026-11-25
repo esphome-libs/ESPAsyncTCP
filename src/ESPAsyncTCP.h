@@ -150,6 +150,7 @@ class AsyncClient {
     std::shared_ptr<ACErrorTracker> _errorTracker;
 
     void _close();
+    void _resetErrorTracker();
     void _connected(std::shared_ptr<ACErrorTracker>& closeAbort, void* pcb, err_t err);
     void _error(err_t err);
 #if ASYNC_TCP_SSL_ENABLED
