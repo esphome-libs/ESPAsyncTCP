@@ -171,7 +171,8 @@ static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl);
 // Record whose data callback is running, so tcp_ssl_free() defers its release
 static tcp_ssl_t *tcp_ssl_in_data_cb = NULL;
 
-// Reports a failed handshake; the error callback aborts the connection
+// Reports an error during the handshake or in records read right after it;
+// AsyncClient closes cleanly on SSL_CLOSE_NOTIFY and aborts otherwise
 static void tcp_ssl_handshake_fail(tcp_ssl_t *tcp_ssl, int err) {
   if (tcp_ssl->on_error) {
     tcp_ssl->on_error(tcp_ssl->arg, tcp_ssl->tcp, err);
