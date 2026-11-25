@@ -300,8 +300,8 @@ class AsyncServer {
     // There is no TLS server; refuse to listen at all rather than serve plaintext
     void beginSecure(const char *cert, const char *private_key_file, const char *password) {
       (void)cert; (void)private_key_file; (void)password;
-      _secure_requested = true;
       end();
+      _secure_requested = true;
     }
 #endif
     void begin();

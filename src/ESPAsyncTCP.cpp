@@ -1236,6 +1236,10 @@ void AsyncServer::begin(){
 }
 
 void AsyncServer::end(){
+#if ASYNC_TCP_SSL_ENABLED
+  // An explicit stop resets a refused beginSecure()
+  _secure_requested = false;
+#endif
   if(_pcb){
     //cleanup all connections?
     tcp_arg(_pcb, NULL);
