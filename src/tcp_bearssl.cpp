@@ -26,7 +26,7 @@
 #include <core_esp8266_features.h>
 #include <async_config.h>
 
-#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
+#if ASYNC_TCP_SSL_ENABLED
 
 #include "user_interface.h"
 
@@ -131,14 +131,6 @@ extern void thunk_br_ssl_engine_sendrec_ack(br_ssl_engine_context *cc,
 #define NET_DEBUG(...)
 #endif
 
-static uint8_t _tcp_ssl_has_client = 0;
-
-SSL_CTX *tcp_ssl_new_server_ctx(const char *cert, const char *private_key_file,
-                                const char *password) {
-  TCP_SSL_DEBUG("Unimplemented\n");
-  return NULL;
-}
-
 struct tcp_ssl_pcb {
   struct tcp_pcb *tcp;
   SSL_CTX *ssl_ctx;
@@ -168,8 +160,6 @@ static tcp_ssl_t *tcp_ssl_hsptr = NULL;
 static os_timer_t handshake_timer = {0};
 static void tcp_ssl_handshake_pump(void *);
 static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl);
-
-uint8_t tcp_ssl_has_client() { return _tcp_ssl_has_client; }
 
 #define _ASYNCTCP_STRINGIFY(x) #x
 #define ASYNCTCP_STRINGIFY(x) _ASYNCTCP_STRINGIFY(x)
@@ -250,12 +240,8 @@ static SSL_CTX *tcp_ssl_ctx_new(SSL_CTX_PARAMS &params) {
     params.iobuf_out_size = BEARSSL_DEFAULT_OUT_BUF_SIZE;
   }
 
-  ssl_ctx->_iobuf_in =
-      std::shared_ptr<unsigned char>(new (std::nothrow) unsigned char[params.iobuf_in_size],
-                                     std::default_delete<unsigned char[]>());
-  ssl_ctx->_iobuf_out =
-      std::shared_ptr<unsigned char>(new (std::nothrow) unsigned char[params.iobuf_out_size],
-                                     std::default_delete<unsigned char[]>());
+  ssl_ctx->_iobuf_in.reset(new (std::nothrow) unsigned char[params.iobuf_in_size]);
+  ssl_ctx->_iobuf_out.reset(new (std::nothrow) unsigned char[params.iobuf_out_size]);
 
   if (!ssl_ctx->_iobuf_in || !ssl_ctx->_iobuf_out) {
     TCP_SSL_DEBUG("ssl_ctx_new: failed to allocate io buffers\n");
@@ -534,11 +520,6 @@ int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
   return 0;
 }
 
-int tcp_ssl_new_server(struct tcp_pcb *tcp, SSL_CTX *ssl_ctx) {
-  TCP_SSL_DEBUG("Unimplemented\n");
-  return -1;
-}
-
 int tcp_ssl_free(struct tcp_pcb *tcp) {
   if (!tcp) {
     TCP_SSL_DEBUG("tcp_ssl_free: invalid tcp!\n");
@@ -577,9 +558,6 @@ int tcp_ssl_free(struct tcp_pcb *tcp) {
   }
   if ((cur->type & TCP_SSL_TYPE_CLIENT_ALL) && cur->ssl_ctx) {
     tcp_ssl_ctx_free(cur->ssl_ctx);
-  }
-  if (cur->type & TCP_SSL_TYPE_SERVER_ALL) {
-    _tcp_ssl_has_client = 0;
   }
   free(cur);
 

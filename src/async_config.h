@@ -5,13 +5,9 @@
 #define ASYNC_TCP_SSL_ENABLED 0
 #endif
 
-#ifndef ASYNC_TCP_SSL_AXTLS
-#define ASYNC_TCP_SSL_AXTLS 0
-#endif
-
-// BearSSL is the default unless axTLS is chosen; both cannot be built together.
+// BearSSL is the only TLS backend; kept for code that still tests it.
 #ifndef ASYNC_TCP_SSL_BEARSSL
-#define ASYNC_TCP_SSL_BEARSSL (!ASYNC_TCP_SSL_AXTLS)
+#define ASYNC_TCP_SSL_BEARSSL 1
 #endif
 
 #ifndef TCP_MSS
