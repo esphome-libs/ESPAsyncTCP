@@ -26,7 +26,7 @@
 #include <core_esp8266_features.h>
 #include <async_config.h>
 
-#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
+#if ASYNC_TCP_SSL_ENABLED
 
 #include "user_interface.h"
 
@@ -40,6 +40,36 @@
 #include <stdlib.h>
 
 #include "tcp_bearssl.h"
+
+// Stack thunked versions of calls
+extern "C" {
+extern unsigned char *
+thunk_br_ssl_engine_recvapp_buf(const br_ssl_engine_context *cc, size_t *len);
+extern void thunk_br_ssl_engine_recvapp_ack(br_ssl_engine_context *cc,
+                                            size_t len);
+extern unsigned char *
+thunk_br_ssl_engine_recvrec_buf(const br_ssl_engine_context *cc, size_t *len);
+extern void thunk_br_ssl_engine_recvrec_ack(br_ssl_engine_context *cc,
+                                            size_t len);
+extern unsigned char *
+thunk_br_ssl_engine_sendapp_buf(const br_ssl_engine_context *cc, size_t *len);
+extern void thunk_br_ssl_engine_sendapp_ack(br_ssl_engine_context *cc,
+                                            size_t len);
+extern unsigned char *
+thunk_br_ssl_engine_sendrec_buf(const br_ssl_engine_context *cc, size_t *len);
+extern void thunk_br_ssl_engine_sendrec_ack(br_ssl_engine_context *cc,
+                                            size_t len);
+};
+
+// Run the BearSSL engine on the core's 6 KB stack thunk, as WiFiClientSecure does
+#define br_ssl_engine_recvapp_ack thunk_br_ssl_engine_recvapp_ack
+#define br_ssl_engine_recvapp_buf thunk_br_ssl_engine_recvapp_buf
+#define br_ssl_engine_recvrec_ack thunk_br_ssl_engine_recvrec_ack
+#define br_ssl_engine_recvrec_buf thunk_br_ssl_engine_recvrec_buf
+#define br_ssl_engine_sendapp_ack thunk_br_ssl_engine_sendapp_ack
+#define br_ssl_engine_sendapp_buf thunk_br_ssl_engine_sendapp_buf
+#define br_ssl_engine_sendrec_ack thunk_br_ssl_engine_sendrec_ack
+#define br_ssl_engine_sendrec_buf thunk_br_ssl_engine_sendrec_buf
 
 #ifndef BEARSSL_HEAPDEBUG
 #define BEARSSL_HEAPDEBUG 1
@@ -101,26 +131,22 @@
 #define NET_DEBUG(...)
 #endif
 
-static uint8_t _tcp_ssl_has_client = 0;
-
-SSL_CTX *tcp_ssl_new_server_ctx(const char *cert, const char *private_key_file,
-                                const char *password) {
-  TCP_SSL_DEBUG("Unimplemented\n");
-  return NULL;
-}
-
 struct tcp_ssl_pcb {
   struct tcp_pcb *tcp;
   SSL_CTX *ssl_ctx;
   SSL *ssl;
   uint8_t type;
   uint16_t handshake_offset;
+  uint16_t pending_offset;
+  // Bytes of pending already passed to tcp_recved
+  uint16_t pending_acked;
   struct pbuf *handshake;
+  // Input the engine could not take yet because it had to send first
+  struct pbuf *pending;
   void *arg;
   tcp_ssl_data_cb_t on_data;
   tcp_ssl_handshake_cb_t on_handshake;
   tcp_ssl_error_cb_t on_error;
-  tcp_ssl_cert_cb_t on_cert;
   struct tcp_ssl_pcb *next;
 };
 
@@ -132,8 +158,9 @@ static tcp_ssl_t *tcp_ssl_array = NULL;
 static tcp_ssl_t *tcp_ssl_hsptr = NULL;
 static os_timer_t handshake_timer = {0};
 static void tcp_ssl_handshake_pump(void *);
-
-uint8_t tcp_ssl_has_client() { return _tcp_ssl_has_client; }
+static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl);
+// Record whose data callback is running, so tcp_ssl_free() defers its release
+static tcp_ssl_t *tcp_ssl_in_data_cb = NULL;
 
 #define _ASYNCTCP_STRINGIFY(x) #x
 #define ASYNCTCP_STRINGIFY(x) _ASYNCTCP_STRINGIFY(x)
@@ -214,12 +241,8 @@ static SSL_CTX *tcp_ssl_ctx_new(SSL_CTX_PARAMS &params) {
     params.iobuf_out_size = BEARSSL_DEFAULT_OUT_BUF_SIZE;
   }
 
-  ssl_ctx->_iobuf_in =
-      std::shared_ptr<unsigned char>(new unsigned char[params.iobuf_in_size],
-                                     std::default_delete<unsigned char[]>());
-  ssl_ctx->_iobuf_out =
-      std::shared_ptr<unsigned char>(new unsigned char[params.iobuf_out_size],
-                                     std::default_delete<unsigned char[]>());
+  ssl_ctx->_iobuf_in.reset(new (std::nothrow) unsigned char[params.iobuf_in_size]);
+  ssl_ctx->_iobuf_out.reset(new (std::nothrow) unsigned char[params.iobuf_out_size]);
 
   if (!ssl_ctx->_iobuf_in || !ssl_ctx->_iobuf_out) {
     TCP_SSL_DEBUG("ssl_ctx_new: failed to allocate io buffers\n");
@@ -426,10 +449,10 @@ static int tcp_ssl_outbuf_pump_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
           TCP_SSL_DEBUG("tcp_ssl_outbuf_pump_int: No memory for %u\n", to_send);
           to_send = 0;
         } else {
-          TCP_SSL_DEBUG("tcp_ssl_outbuf_pump_int: tcp_write error - %u\n", err);
-          tcp_abort(tcp);
+          TCP_SSL_DEBUG("tcp_ssl_outbuf_pump_int: tcp_write error - %d\n", err);
+          // The caller aborts the connection
+          return ERR_TCP_SSL_OUTPUT_FAILED;
         }
-        // br_ssl_engine_sendrec_ack(engine, 0);
         break;
       }
       send_len += to_send;
@@ -440,18 +463,13 @@ static int tcp_ssl_outbuf_pump_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
 
   if (send_len) {
     NET_DEBUG("tcp_ssl_outbuf_pump_int: sending %d to network\n", send_len);
+    // The records are queued; lwIP retries the output itself, as on plain TCP
     err_t err = tcp_output(tcp);
     if (err != ERR_OK) {
-      TCP_SSL_DEBUG("tcp_ssl_outbuf_pump_int: tcp_output err - %u\n", err);
-      tcp_abort(tcp);
+      TCP_SSL_DEBUG("tcp_ssl_outbuf_pump_int: tcp_output err - %d\n", err);
     }
   }
   return send_len;
-}
-
-int tcp_ssl_new_client(struct tcp_pcb *tcp, const char *hostName) {
-  SSL_CTX_PARAMS params{};
-  return tcp_ssl_new_client_ex(tcp, hostName, params);
 }
 
 int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
@@ -491,13 +509,27 @@ int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
     return ERR_TCP_SSL_INVALID_SSL_STATE;
   }
 
-  tcp_ssl_outbuf_pump_int(tcp, tcp_ssl);
+  // The caller closes the connection and frees the record on failure
+  if (tcp_ssl_outbuf_pump_int(tcp, tcp_ssl) < 0) {
+    return ERR_TCP_SSL_OUTPUT_FAILED;
+  }
   return 0;
 }
 
-int tcp_ssl_new_server(struct tcp_pcb *tcp, SSL_CTX *ssl_ctx) {
-  TCP_SSL_DEBUG("Unimplemented\n");
-  return -1;
+static void tcp_ssl_release(tcp_ssl_t *cur) {
+  if (cur->handshake) {
+    pbuf_free(cur->handshake);
+  }
+  if (cur->pending) {
+    pbuf_free(cur->pending);
+  }
+  if (cur->ssl) {
+    tcp_ssl_free_ssl(cur->ssl);
+  }
+  if ((cur->type & TCP_SSL_TYPE_CLIENT_ALL) && cur->ssl_ctx) {
+    tcp_ssl_ctx_free(cur->ssl_ctx);
+  }
+  free(cur);
 }
 
 int tcp_ssl_free(struct tcp_pcb *tcp) {
@@ -527,25 +559,19 @@ int tcp_ssl_free(struct tcp_pcb *tcp) {
   if (cur == tcp_ssl_hsptr) {
     tcp_ssl_hsptr = cur->next ? cur->next : tcp_ssl_array;
   }
-  if (cur->handshake) {
-    pbuf_free(cur->handshake);
-  }
-  if (cur->ssl) {
-    tcp_ssl_free_ssl(cur->ssl);
-  }
-  if ((cur->type & TCP_SSL_TYPE_CLIENT_ALL) && cur->ssl_ctx) {
-    tcp_ssl_ctx_free(cur->ssl_ctx);
-  }
-  if (cur->type & TCP_SSL_TYPE_SERVER_ALL) {
-    _tcp_ssl_has_client = 0;
-  }
-  free(cur);
-
   if (!tcp_ssl_array) {
     os_timer_disarm(&handshake_timer);
   }
+  // The data callback is still reading from this record's buffers; the read
+  // loop releases it once the callback returns
+  if (cur == tcp_ssl_in_data_cb) {
+    tcp_ssl_in_data_cb = NULL;
+    return 0;
+  }
+  tcp_ssl_release(cur);
   return 0;
 }
+
 
 int tcp_ssl_write(struct tcp_pcb *tcp, uint8_t *data, size_t len) {
   if (!tcp) {
@@ -685,11 +711,11 @@ static void tcp_ssl_handshake_pump(void *) {
           int ssl_error = br_ssl_engine_last_error(engine);
           TCP_SSL_DEBUG("tcp_ssl_handshake_pump: handshake failed (%d)\n",
                         ssl_error);
+          // The error callback aborts the connection
           if (tcp_ssl_hsptr->on_error) {
             tcp_ssl_hsptr->on_error(tcp_ssl_hsptr->arg, tcp_ssl_hsptr->tcp,
                                     ssl_error);
           }
-          tcp_abort(tcp_ssl_hsptr->tcp);
         } else if (state & BR_SSL_SENDAPP) {
           HS_DEBUG("tcp_ssl_handshake_pump: handshake successful\n");
           tcp_ssl_hsptr->type = TCP_SSL_TYPE_CLIENT_HANDSHAKED;
@@ -770,55 +796,120 @@ int tcp_ssl_read(struct tcp_pcb *tcp, struct pbuf *p) {
     return pbuf_size;
   }
 
-  int pbuf_offset = 0;
+  if (tcp_ssl->pending) {
+    // Keep the order: new data goes after the input still waiting
+    pbuf_cat(tcp_ssl->pending, p);
+  } else {
+    tcp_ssl->pending = p;
+    tcp_ssl->pending_offset = 0;
+    tcp_ssl->pending_acked = 0;
+  }
+  return tcp_ssl_consume(tcp, tcp_ssl);
+}
+
+// Decrypts p from *offset on and passes the data to on_data. Stops with
+// *offset short of the end when the engine must send before it reads more.
+static int tcp_ssl_read_int(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl,
+                            struct pbuf *p, int *offset) {
+  br_ssl_engine_context *engine = tcp_ssl->ssl_ctx->_eng;
+  int pbuf_size = p->tot_len - *offset;
   int total_bytes = 0;
-  do {
+  while (pbuf_size > 0) {
+    bool progress = false;
     size_t _recv_len = 0;
     unsigned char *recv_buf = br_ssl_engine_recvrec_buf(engine, &_recv_len);
     if (recv_buf) {
+      progress = true;
       int to_copy = _recv_len < pbuf_size ? _recv_len : pbuf_size;
       NET_DEBUG("tcp_ssl_read: consuming %d / %d\n", to_copy, pbuf_size);
-      to_copy = pbuf_copy_partial(p, recv_buf, to_copy, pbuf_offset);
+      to_copy = pbuf_copy_partial(p, recv_buf, to_copy, *offset);
       READ_DEBUG("tcp_ssl_read: consumed %d\n", to_copy);
-      pbuf_offset += to_copy;
+      *offset += to_copy;
       pbuf_size -= to_copy;
       br_ssl_engine_recvrec_ack(engine, to_copy);
     }
     // Feed the dog before it bites
     system_soft_wdt_feed();
-    state = br_ssl_engine_current_state(engine);
+    unsigned state = br_ssl_engine_current_state(engine);
     if (state & BR_SSL_RECVAPP) {
       _recv_len = 0;
       unsigned char *recv_buf = br_ssl_engine_recvapp_buf(engine, &_recv_len);
       if (recv_buf) {
         READ_DEBUG("tcp_ssl_read: app data (%d)\n", _recv_len);
+        progress = true;
         if (tcp_ssl->on_data) {
+          tcp_ssl_t *outer = tcp_ssl_in_data_cb;
+          tcp_ssl_in_data_cb = tcp_ssl;
           tcp_ssl->on_data(tcp_ssl->arg, tcp, recv_buf, _recv_len);
+          // tcp_ssl_free() clears the marker when the callback closed the client
+          bool closed = tcp_ssl_in_data_cb != tcp_ssl;
+          tcp_ssl_in_data_cb = outer;
+          if (closed) {
+            tcp_ssl_release(tcp_ssl);
+            return SSL_CLOSE_NOTIFY;
+          }
         }
         br_ssl_engine_recvapp_ack(engine, _recv_len);
         total_bytes += _recv_len;
       }
-    } else {
-      if (state & BR_SSL_CLOSED) {
-        int ssl_error = br_ssl_engine_last_error(engine);
-        if (ssl_error) {
-          TCP_SSL_DEBUG("tcp_ssl_read: connection failed - ");
-          TCP_SSL_DEBUG("error (%u)\n", ssl_error);
-          tcp_abort(tcp);
-        } else {
-          TCP_SSL_DEBUG("tcp_ssl_read: connection closed\n");
-        }
-        total_bytes = SSL_CLOSE_NOTIFY;
-        break;
+    } else if (state & BR_SSL_CLOSED) {
+      int ssl_error = br_ssl_engine_last_error(engine);
+      if (ssl_error) {
+        TCP_SSL_DEBUG("tcp_ssl_read: connection failed - error (%d)\n",
+                      ssl_error);
+        // The caller reports the error and aborts the connection
+        return ERR_TCP_SSL_INVALID_SSL_DATA;
       }
+      TCP_SSL_DEBUG("tcp_ssl_read: connection closed\n");
+      return SSL_CLOSE_NOTIFY;
     }
-  } while (pbuf_size > 0);
-
-  NET_DEBUG("tcp_ssl_read: processed %d / %d\n", pbuf_offset, p->tot_len);
-  tcp_recved(tcp, p->tot_len);
-  pbuf_free(p);
-
+    if (!progress) {
+      if ((state & BR_SSL_SENDREC) == 0) {
+        TCP_SSL_DEBUG("tcp_ssl_read: engine stalled\n");
+        return ERR_TCP_SSL_INVALID_SSL_STATE;
+      }
+      // The engine must send first (an alert, a renegotiation reply); the
+      // rest is read once AsyncClient has flushed the output
+      break;
+    }
+  }
   return total_bytes;
+}
+
+// Reads the pending input, keeps what the engine could not take yet and frees
+// the rest
+static int tcp_ssl_consume(struct tcp_pcb *tcp, tcp_ssl_t *tcp_ssl) {
+  struct pbuf *p = tcp_ssl->pending;
+  int offset = tcp_ssl->pending_offset;
+  tcp_ssl->pending = NULL;
+  int total_bytes = tcp_ssl_read_int(tcp, tcp_ssl, p, &offset);
+  // The data callback closed the client and freed the record
+  if (!tcp_ssl_has(tcp)) {
+    pbuf_free(p);
+    return SSL_CLOSE_NOTIFY;
+  }
+  NET_DEBUG("tcp_ssl_read: processed %d / %d\n", offset, p->tot_len);
+  if (offset > tcp_ssl->pending_acked) {
+    tcp_recved(tcp, offset - tcp_ssl->pending_acked);
+    tcp_ssl->pending_acked = offset;
+  }
+  if (total_bytes >= 0 && offset < p->tot_len) {
+    // Free the fully read head pbufs; offsets restart at the first unread byte
+    tcp_ssl->pending = pbuf_free_header(p, offset);
+    tcp_ssl->pending_acked -= offset;
+    tcp_ssl->pending_offset = 0;
+  } else {
+    pbuf_free(p);
+  }
+  return total_bytes;
+}
+
+int tcp_ssl_read_pending(struct tcp_pcb *tcp) {
+  tcp_ssl_t *tcp_ssl = tcp_ssl_get(tcp);
+  if (!tcp_ssl || !tcp_ssl->pending) {
+    return 0;
+  }
+  return tcp_ssl_consume(tcp, tcp_ssl);
 }
 
 SSL *tcp_ssl_get_ssl(struct tcp_pcb *tcp) {
@@ -830,19 +921,6 @@ SSL *tcp_ssl_get_ssl(struct tcp_pcb *tcp) {
 }
 
 bool tcp_ssl_has(struct tcp_pcb *tcp) { return tcp_ssl_get(tcp) != NULL; }
-
-int tcp_ssl_is_server(struct tcp_pcb *tcp) {
-  if (!tcp) {
-    return ERR_TCP_SSL_INVALID_TCP;
-  }
-
-  tcp_ssl_t *tcp_ssl = tcp_ssl_get(tcp);
-  if (!tcp_ssl) {
-    TCP_SSL_DEBUG("tcp_ssl_write: tcp_ssl is NULL\n");
-    return ERR_TCP_SSL_INVALID_SSL_REC;
-  }
-  return tcp_ssl->type;
-}
 
 void tcp_ssl_arg(struct tcp_pcb *tcp, void *arg) {
   tcp_ssl_t *item = tcp_ssl_get(tcp);
@@ -872,31 +950,5 @@ void tcp_ssl_err(struct tcp_pcb *tcp, tcp_ssl_error_cb_t arg) {
   }
 }
 
-void tcp_ssl_cert(struct tcp_pcb *tcp, tcp_ssl_cert_cb_t arg) {
-  tcp_ssl_t *item = tcp_ssl_get(tcp);
-  if (item) {
-    item->on_cert = arg;
-  }
-}
-
-// Stack thunked versions of calls
-extern "C" {
-extern unsigned char *
-thunk_br_ssl_engine_recvapp_buf(const br_ssl_engine_context *cc, size_t *len);
-extern void thunk_br_ssl_engine_recvapp_ack(br_ssl_engine_context *cc,
-                                            size_t len);
-extern unsigned char *
-thunk_br_ssl_engine_recvrec_buf(const br_ssl_engine_context *cc, size_t *len);
-extern void thunk_br_ssl_engine_recvrec_ack(br_ssl_engine_context *cc,
-                                            size_t len);
-extern unsigned char *
-thunk_br_ssl_engine_sendapp_buf(const br_ssl_engine_context *cc, size_t *len);
-extern void thunk_br_ssl_engine_sendapp_ack(br_ssl_engine_context *cc,
-                                            size_t len);
-extern unsigned char *
-thunk_br_ssl_engine_sendrec_buf(const br_ssl_engine_context *cc, size_t *len);
-extern void thunk_br_ssl_engine_sendrec_ack(br_ssl_engine_context *cc,
-                                            size_t len);
-};
 
 #endif
