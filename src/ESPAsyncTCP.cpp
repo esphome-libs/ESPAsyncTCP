@@ -817,6 +817,16 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
 
   // Close requested
   if(_close_pcb){
+#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
+    // Hand buffered TLS records to TCP first, so the peer does not get a truncated
+    // record; give up once the ack timeout passes
+    if(_pcb_secure && _handshake_done){
+      if(_ssl_pump(pcb, _pcb_sent_at) < 0)
+        return;
+      if(tcp_ssl_has_output(pcb) && !(_ack_timeout && (millis() - _pcb_sent_at) >= _ack_timeout))
+        return;
+    }
+#endif
     ASYNC_TCP_DEBUG("_poll[%u]: Process _close_pcb.\n", errorTracker->getConnectionId() );
     _close_pcb = false;
     _close();
