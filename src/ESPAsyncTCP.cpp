@@ -843,7 +843,7 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
         return;
       // lwIP's own queues: the byte counter can still hold unacked handshake bytes
       bool pending = tcp_ssl_has_output(pcb) || pcb->unsent != NULL || pcb->unacked != NULL;
-      if(pending && _ack_timeout && (now - _close_requested_at) < _ack_timeout){
+      if(pending && (!_ack_timeout || (now - _close_requested_at) < _ack_timeout)){
         _close_pcb = true;
         return;
       }
