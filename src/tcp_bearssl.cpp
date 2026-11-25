@@ -651,10 +651,12 @@ int tcp_ssl_sndbuf(struct tcp_pcb *tcp) {
   if (!br_ssl_engine_sendapp_buf(engine, &sendapp_len)) {
     return 0;
   }
-  // The open record's free space, plus record_len of plaintext for each
-  // _iobuf_out_size (the largest record) of TCP room
+  // The open record's free space, plus one more record of plaintext for each
+  // full record's ciphertext (plaintext plus BearSSL's record overhead) that
+  // fits in the TCP send buffer
+  static constexpr size_t RECORD_OVERHEAD = BR_SSL_BUFSIZE_OUTPUT - 16384;
   size_t record_len = sendapp_len + tcp_ssl->ssl_ctx->_pending_send;
-  size_t records = tcp_sndbuf(tcp) / tcp_ssl->ssl_ctx->_iobuf_out_size;
+  size_t records = tcp_sndbuf(tcp) / (record_len + RECORD_OVERHEAD);
   return sendapp_len + records * record_len;
 }
 
