@@ -617,8 +617,8 @@ int tcp_ssl_write(struct tcp_pcb *tcp, uint8_t *data, size_t len) {
     if (sendapp_len == to_send) {
       // when app buffer is filled, flush is done automatically
       ctx->_pending_send = 0;
-      return tcp_ssl_outbuf_pump_int(tcp, tcp_ssl);
     }
+    return to_send;
   }
   return 0;
 }
@@ -640,9 +640,14 @@ int tcp_ssl_sndbuf(struct tcp_pcb *tcp) {
   }
 
   size_t sendapp_len = 0;
-  br_ssl_engine_sendapp_buf(engine, &sendapp_len);
-  size_t tcp_len = tcp_sndbuf(tcp);
-  return sendapp_len < tcp_len ? sendapp_len : tcp_len;
+  if (!br_ssl_engine_sendapp_buf(engine, &sendapp_len)) {
+    return 0;
+  }
+  // The open record's free space, plus record_len of plaintext for each
+  // _iobuf_out_size (the largest record) of TCP room
+  size_t record_len = sendapp_len + tcp_ssl->ssl_ctx->_pending_send;
+  size_t records = tcp_sndbuf(tcp) / tcp_ssl->ssl_ctx->_iobuf_out_size;
+  return sendapp_len + records * record_len;
 }
 
 int tcp_ssl_outbuf_pump(struct tcp_pcb *tcp) {

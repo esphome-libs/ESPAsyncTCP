@@ -430,19 +430,30 @@ size_t AsyncClient::add(const char* data, size_t size, uint8_t apiflags) {
     return 0;
 #if ASYNC_TCP_SSL_ENABLED
   if(_pcb_secure){
+#if ASYNC_TCP_SSL_BEARSSL
+    // Returns plaintext accepted; _ssl_pump counts the ciphertext handed to lwIP
+    uint32_t now = millis();
+    size_t accepted = 0;
+    while(true){
+      int sent = tcp_ssl_write(_pcb, (uint8_t*)data + accepted, size - accepted);
+      if(sent < 0){
+        _close();
+        return 0;
+      }
+      accepted += sent;
+      // A full record must reach TCP before the engine takes more data
+      if(accepted == size || _ssl_pump(_pcb, now) <= 0)
+        return accepted;
+    }
+#else
     int sent = tcp_ssl_write(_pcb, (uint8_t*)data, size);
     if(sent >= 0){
-#if ASYNC_TCP_SSL_BEARSSL
-      if (sent > 0) {
-        _pcb_busy = true;
-        _pcb_sent_at = millis();
-      }
-#endif
       _tx_unacked_len += sent;
       return sent;
     }
     _close();
     return 0;
+#endif
   }
 #endif
   size_t will_send = (room < size) ? room : size;
