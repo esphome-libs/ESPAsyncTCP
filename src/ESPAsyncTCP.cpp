@@ -785,7 +785,7 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
   }
 #if ASYNC_TCP_SSL_ENABLED
   // SSL Handshake Timeout
-  if(_pcb_secure && !_handshake_done && (now - _rx_last_packet) >= 2000){
+  if(_pcb_secure && !_handshake_done && (now - _rx_last_packet) >= ASYNC_TCP_SSL_HANDSHAKE_TIMEOUT){
     ASYNC_TCP_DEBUG("_poll[%u]: SSL Handshake Timeout.\n", errorTracker->getConnectionId() );
     _close();
     return;
