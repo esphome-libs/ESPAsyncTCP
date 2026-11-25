@@ -460,6 +460,10 @@ bool AsyncClient::send(){
   if(_pcb_secure){
 #if ASYNC_TCP_SSL_BEARSSL
     int pumped = tcp_ssl_outbuf_pump(_pcb);
+    if (pumped == ERR_TCP_SSL_OUTPUT_FAILED) {
+      abort();
+      return false;
+    }
     if (pumped > 0) {
       _pcb_busy = true;
       _pcb_sent_at = millis();
@@ -599,6 +603,10 @@ void AsyncClient::_sent(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
   if (_pcb_secure){
 #if ASYNC_TCP_SSL_BEARSSL
     int pumped = tcp_ssl_outbuf_pump(pcb);
+    if (pumped == ERR_TCP_SSL_OUTPUT_FAILED) {
+      abort();
+      return;
+    }
     if (pumped > 0) {
       _pcb_busy = true;
       _pcb_sent_at = _rx_last_packet;
@@ -770,6 +778,10 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
 #if ASYNC_TCP_SSL_BEARSSL
   if (_pcb_secure) {
     int pumped = tcp_ssl_outbuf_pump(pcb);
+    if (pumped == ERR_TCP_SSL_OUTPUT_FAILED) {
+      abort();
+      return;
+    }
     if (pumped > 0) {
       _pcb_busy = true;
       _pcb_sent_at = now;
