@@ -136,7 +136,7 @@ class AsyncClient {
     bool _handshake_done;
     SSL_CTX_PARAMS _ssl_params;
 #endif
-    uint32_t _pcb_sent_at;
+    uint32_t _pcb_sent_at;  // also the start of a close(false) half-close
     bool _close_pcb;
     bool _ack_pcb;
     uint32_t _tx_unacked_len;

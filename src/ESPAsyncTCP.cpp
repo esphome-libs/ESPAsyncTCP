@@ -718,6 +718,12 @@ void AsyncClient::_recv(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
     _close();
     return;
   }
+  // Half-closed by close(false): the owner is done, so take the data without passing it on
+  if(_close_pcb && disconnecting()){
+    tcp_recved(pcb, pb->tot_len);
+    pbuf_free(pb);
+    return;
+  }
   _rx_last_packet = millis();
   errorTracker->setCloseError(ERR_OK);
 #if ASYNC_TCP_SSL_ENABLED
@@ -790,23 +796,27 @@ void AsyncClient::_poll(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
   if(_close_pcb){
     // Cleared first, so a teardown in the pump cannot close a later connection
     _close_pcb = false;
-    // Close only once the peer acknowledged everything sent (e.g. an MQTT DISCONNECT), so the
-    // owner does not reconnect while it drains; give up after the ack timeout with no new send
-    bool drain = true;
+    // Half-close: FIN follows the queued bytes (e.g. an MQTT DISCONNECT) and the peer's FIN reaches
+    // _recv(), which closes, so the owner cannot reconnect before the peer read it all. Bounded by
+    // the ack timeout.
+    bool in_time = _ack_timeout && (now - _pcb_sent_at) < _ack_timeout;
+    bool keep = false;
+    if(connected()){
 #if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
-    if(_pcb_secure){
-      // A TLS handshake still running is dropped at once
-      drain = _handshake_done;
-      if(drain && _ssl_pump(pcb, now) < 0)
+      if(_pcb_secure && _ssl_pump(pcb, now) < 0)
         return;
+      if(_pcb_secure && tcp_ssl_has_output(pcb))
+        keep = in_time;
+      else
+#endif
+      if(tcp_shutdown(pcb, 0, 1) == ERR_OK){
+        _pcb_sent_at = now;
+        keep = true;
+      }
+    } else {
+      keep = in_time && disconnecting();
     }
-#endif
-    // Read after the pump, which can move the last records into lwIP
-    bool pending = drain && (pcb->unsent != NULL || pcb->unacked != NULL);
-#if ASYNC_TCP_SSL_ENABLED && ASYNC_TCP_SSL_BEARSSL
-    pending = pending || (drain && _pcb_secure && tcp_ssl_has_output(pcb));
-#endif
-    if(pending && (!_ack_timeout || (now - _pcb_sent_at) < _ack_timeout)){
+    if(keep){
       _close_pcb = true;
       return;
     }
