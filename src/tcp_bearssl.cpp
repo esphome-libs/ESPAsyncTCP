@@ -222,9 +222,6 @@ static void tcp_ssl_free_ssl(SSL *ssl) {
   if (ssl->_cc) {
     free(ssl->_cc);
   }
-  if (ssl->_sc) {
-    free(ssl->_sc);
-  }
   free(ssl);
 }
 
@@ -346,7 +343,7 @@ static const uint16_t suites_P[] PROGMEM = {
 static void br_ssl_install_client_x509_validator(SSL_CTX *ctx) {
   // adapted _installClientX509Validator, detached from WiFiClient
   // X509 minimal validator.  Checks dates, cert chain for trusted CA, etc.
-  ctx->_x509_minimal = std::make_shared<br_x509_minimal_context>();
+  ctx->_x509_minimal = std::make_unique<br_x509_minimal_context>();
   br_x509_minimal_init(ctx->_x509_minimal.get(), &br_sha256_vtable, NULL, 0);
   br_x509_minimal_set_rsa(ctx->_x509_minimal.get(),
                           br_ssl_engine_get_rsavrfy(ctx->_eng));
@@ -354,14 +351,6 @@ static void br_ssl_install_client_x509_validator(SSL_CTX *ctx) {
                             br_ssl_engine_get_ec(ctx->_eng),
                             br_ssl_engine_get_ecdsa(ctx->_eng));
   br_x509_minimal_install_hashes(ctx->_x509_minimal.get());
-
-  // pre-defined timestamp instead of getting it dynamically
-  if (ctx->_now) {
-    // Magic constants convert to x509 times
-    br_x509_minimal_set_time(ctx->_x509_minimal.get(),
-                             ((uint32_t)ctx->_now) / 86400 + 719528,
-                             ((uint32_t)ctx->_now) % 86400);
-  }
 
   // TODO: certstore?
   // if (ctx->_certStore) {
@@ -398,7 +387,7 @@ static SSL *br_ssl_client_new(struct tcp_pcb *tcp, SSL_CTX *ctx) {
   if (ctx->_use_insecure) {
     TCP_SSL_DEBUG("br_ssl_client_new: using insecure ctx\n");
     // Use common insecure x509 authenticator
-    ctx->_x509_insecure = std::make_shared<struct br_x509_insecure_context>();
+    ctx->_x509_insecure.reset(new (std::nothrow) br_x509_insecure_context());
     if (!ctx->_x509_insecure) {
       HEAP_DEBUG("OOM ctx->_insecure_ctx\n");
       free(cc);
@@ -425,7 +414,6 @@ static SSL *br_ssl_client_new(struct tcp_pcb *tcp, SSL_CTX *ctx) {
   }
 
   ssl->_cc = cc;
-  ssl->_sc = NULL;
 
   return ssl;
 }

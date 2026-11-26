@@ -34,10 +34,6 @@
 
 #include "tcp_bearssl_helpers.h"
 
-namespace BearSSL {
-class X509List;
-}
-
 #if BEARSSL_DEBUG
 #define DEBUG_BSSL(...) TCP_SSL_DEBUG(__VA_ARGS__)
 #else
@@ -84,22 +80,16 @@ void br_x509_insecure_init(br_x509_insecure_context *ctx, int _use_fingerprint,
 
 typedef struct SSL_ {
   br_ssl_client_context *_cc;
-  br_ssl_server_context *_sc;
 } SSL;
 
 typedef struct SSL_CTX_ {
   br_ssl_engine_context *_eng;
 
-  std::shared_ptr<br_x509_minimal_context> _x509_minimal;
-  std::shared_ptr<struct br_x509_insecure_context> _x509_insecure;
-  std::shared_ptr<br_x509_knownkey_context> _x509_knownkey;
+  std::unique_ptr<br_x509_minimal_context> _x509_minimal;
+  std::unique_ptr<struct br_x509_insecure_context> _x509_insecure;
   std::unique_ptr<unsigned char[]> _iobuf_in;
   std::unique_ptr<unsigned char[]> _iobuf_out;
 
-  std::shared_ptr<uint16_t> _cipher_list;
-
-  time_t _now;
-  const BearSSL::X509List *_ta;
   int _iobuf_in_size;
   int _iobuf_out_size;
   int _pending_send;
