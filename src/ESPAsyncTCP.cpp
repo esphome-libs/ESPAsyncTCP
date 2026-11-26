@@ -289,7 +289,11 @@ bool AsyncClient::connect(IPAddress ip, uint16_t port){
 #endif
   tcp_arg(pcb, this);
   tcp_err(pcb, &_s_error);
+  // Set until _connected() or _error(), so close() can defer to the new connection
+  _connect_port = port;
   size_t err = tcp_connect(pcb, addr, port,(tcp_connected_fn)&_s_connected);
+  if (ERR_OK != err)
+    _connect_port = 0;
   return (ERR_OK == err);
 }
 
@@ -392,7 +396,7 @@ void AsyncClient::close(bool now){
     _close();
   } else if(!_close_pcb && (_pcb || _connect_port)) {
     // Repeated calls keep the first deadline; connect() clears a request left from an old connection.
-    // Without a connection or a DNS lookup in progress there is nothing to close.
+    // Without a connection or one being set up (DNS lookup or TCP handshake) there is nothing to close.
     _close_pcb = true;
 #if ASYNC_TCP_SSL_ENABLED
     _close_requested_at = millis();
@@ -503,6 +507,7 @@ void AsyncClient::_connected(std::shared_ptr<ACErrorTracker>& errorTracker, void
   // https://www.nongnu.org/lwip/2_1_x/tcp_8h.html#a939867106bd492caf2d85852fb7f6ae8
   // Based on that wording and emoji lets just handle it now.
   // After all, the API does allow for an err != ERR_OK.
+  _connect_port = 0;
   if(NULL == pcb || ERR_OK != err) {
     ASYNC_TCP_DEBUG("_connected[%u]:%s err: %s(%ld)\n", errorTracker->getConnectionId(), ((NULL == pcb) ? " NULL == pcb!," : ""), errorToString(err), err);
     errorTracker->setCloseError(err);
@@ -572,6 +577,7 @@ void AsyncClient::_close(){
 }
 
 void AsyncClient::_error(err_t err) {
+  _connect_port = 0;
   ASYNC_TCP_DEBUG("_error[%u]:%s err: %s(%ld)\n", getConnectionId(), ((NULL == _pcb) ? " NULL == _pcb!," : ""), errorToString(err), err);
   if(_pcb){
 #if ASYNC_TCP_SSL_ENABLED
@@ -847,7 +853,7 @@ void AsyncClient::_dns_found(struct ip_addr *ipaddr){
 #else
 void AsyncClient::_dns_found(const ip_addr *ipaddr){
 #endif
-  // The lookup is over; close() checks _connect_port for one in progress
+  // The lookup is over; connect() sets _connect_port again for the TCP handshake
   uint16_t port = _connect_port;
   _connect_port = 0;
   if(ipaddr){
