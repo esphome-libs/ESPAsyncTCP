@@ -390,8 +390,9 @@ void AsyncClient::close(bool now){
   if(now) {
     ASYNC_TCP_DEBUG("close[%u]: AsyncClient 0x%" PRIXPTR "\n", getConnectionId(), uintptr_t(this));
     _close();
-  } else if(!_close_pcb) {
-    // Repeated calls keep the first deadline; connect() clears a request left from an old connection
+  } else if(!_close_pcb && (_pcb || _connect_port)) {
+    // Repeated calls keep the first deadline; connect() clears a request left from an old connection.
+    // Without a connection or a DNS lookup in progress there is nothing to close.
     _close_pcb = true;
 #if ASYNC_TCP_SSL_ENABLED
     _close_requested_at = millis();
@@ -846,16 +847,19 @@ void AsyncClient::_dns_found(struct ip_addr *ipaddr){
 #else
 void AsyncClient::_dns_found(const ip_addr *ipaddr){
 #endif
+  // The lookup is over; close() checks _connect_port for one in progress
+  uint16_t port = _connect_port;
+  _connect_port = 0;
   if(ipaddr){
     // connect() starts from a clean state; keep a close requested during the lookup
     bool close_requested = _close_pcb;
 #if ASYNC_TCP_SSL_ENABLED
     uint32_t close_requested_at = _close_requested_at;
     const char *host = _hostname.length() > 0 ? _hostname.c_str() : NULL;
-    connect(ipaddr, _connect_port, _pcb_secure, host);
+    connect(ipaddr, port, _pcb_secure, host);
     _close_requested_at = close_requested_at;
 #else
-    connect(ipaddr, _connect_port);
+    connect(ipaddr, port);
 #endif
     _close_pcb = _close_pcb || close_requested;
   } else {
