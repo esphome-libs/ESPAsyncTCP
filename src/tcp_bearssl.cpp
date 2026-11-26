@@ -739,6 +739,11 @@ static void tcp_ssl_handshake_pump(void *) {
           tcp_ssl_t *tcp_ssl = tcp_ssl_hsptr;
           struct tcp_pcb *tcp = tcp_ssl->tcp;
           tcp_ssl->type = TCP_SSL_TYPE_CLIENT_HANDSHAKED;
+          // Renegotiation is off, so the certificate checker (about 1.5 kB) is
+          // never used again; the engine keeps no other pointer into it
+          br_ssl_engine_set_x509(engine, NULL);
+          tcp_ssl->ssl_ctx->_x509_insecure.reset();
+          tcp_ssl->ssl_ctx->_x509_minimal.reset();
           // Records that arrived after Finished are application data; read
           // them after the connect callback, before any newer TCP data
           struct pbuf *rest = tcp_ssl->handshake;
