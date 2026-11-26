@@ -219,9 +219,6 @@ static void tcp_ssl_free_ssl(SSL *ssl) {
   if (!ssl) {
     return;
   }
-  if (ssl->_cc) {
-    free(ssl->_cc);
-  }
   free(ssl);
 }
 
@@ -255,13 +252,8 @@ static SSL_CTX *tcp_ssl_ctx_new(SSL_CTX_PARAMS &params) {
     return nullptr;
   }
 
-  // TODO: merge ssl_ctx and params (subclass?)
-  ssl_ctx->_iobuf_in_size = params.iobuf_in_size;
-  ssl_ctx->_iobuf_out_size = params.iobuf_out_size;
-
-  ssl_ctx->_use_insecure = params.use_insecure;
-  ssl_ctx->_use_fingerprint = params.use_fingerprint;
-  ssl_ctx->_use_self_signed = params.use_self_signed;
+  // br_ssl_client_new() reads the sizes and flags from params; the
+  // fingerprint is copied because the certificate checker points into it
   if (params.use_fingerprint) {
     memcpy(ssl_ctx->_fingerprint, params.fingerprint, 20);
   }
@@ -360,17 +352,17 @@ static void br_ssl_install_client_x509_validator(SSL_CTX *ctx) {
   br_ssl_engine_set_x509(ctx->_eng, &ctx->_x509_minimal->vtable);
 }
 
-static SSL *br_ssl_client_new(struct tcp_pcb *tcp, SSL_CTX *ctx) {
+static SSL *br_ssl_client_new(struct tcp_pcb *tcp, SSL_CTX *ctx,
+                              const SSL_CTX_PARAMS &params) {
   HEAP_DEBUG("free heap = %5d\n", system_get_free_heap_size());
-  HEAP_DEBUG("malloc(br_ssl_client_context) %d\n",
-             sizeof(br_ssl_client_context));
-  br_ssl_client_context *cc =
-      (br_ssl_client_context *)malloc(sizeof(br_ssl_client_context));
-  if (!cc) {
-    TCP_SSL_DEBUG(
-        "br_ssl_client_new: failed to allocate client context struct\n");
+  HEAP_DEBUG("malloc(SSL) %d\n", sizeof(SSL));
+  // The client context lives inside SSL: one allocation per connection
+  SSL *ssl = (SSL *)malloc(sizeof(SSL));
+  if (!ssl) {
+    TCP_SSL_DEBUG("br_ssl_client_new: failed to allocate SSL struct\n");
     return nullptr;
   }
+  br_ssl_client_context *cc = &ssl->_cc;
 
   br_ssl_client_zero(cc);
 
@@ -384,17 +376,17 @@ static SSL *br_ssl_client_new(struct tcp_pcb *tcp, SSL_CTX *ctx) {
   br_ssl_client_base_init(cc, suites_P, sizeof(suites_P) / sizeof(suites_P[0]));
 
   // TODO: add knownKey
-  if (ctx->_use_insecure) {
+  if (params.use_insecure) {
     TCP_SSL_DEBUG("br_ssl_client_new: using insecure ctx\n");
     // Use common insecure x509 authenticator
     ctx->_x509_insecure.reset(new (std::nothrow) br_x509_insecure_context());
     if (!ctx->_x509_insecure) {
       HEAP_DEBUG("OOM ctx->_insecure_ctx\n");
-      free(cc);
+      free(ssl);
       return nullptr;
     }
-    br_x509_insecure_init(ctx->_x509_insecure.get(), ctx->_use_fingerprint,
-                          ctx->_fingerprint, ctx->_use_self_signed);
+    br_x509_insecure_init(ctx->_x509_insecure.get(), params.use_fingerprint,
+                          ctx->_fingerprint, params.use_self_signed);
     br_ssl_engine_set_x509(ctx->_eng, &ctx->_x509_insecure->vtable);
   } else {
     TCP_SSL_DEBUG("br_ssl_client_new: using x509 ctx (NOT IMPLEMENTED YET!)\n");
@@ -403,17 +395,8 @@ static SSL *br_ssl_client_new(struct tcp_pcb *tcp, SSL_CTX *ctx) {
   }
 
   br_ssl_engine_set_buffers_bidi(ctx->_eng, ctx->_iobuf_in.get(),
-                                 ctx->_iobuf_in_size, ctx->_iobuf_out.get(),
-                                 ctx->_iobuf_out_size);
-
-  SSL *ssl = (SSL *)malloc(sizeof(SSL));
-  if (!ssl) {
-    TCP_SSL_DEBUG("br_ssl_client_new: failed to allocate SSL struct\n");
-    free(cc);
-    return nullptr;
-  }
-
-  ssl->_cc = cc;
+                                 params.iobuf_in_size, ctx->_iobuf_out.get(),
+                                 params.iobuf_out_size);
 
   return ssl;
 }
@@ -492,14 +475,14 @@ int tcp_ssl_new_client_ex(struct tcp_pcb *tcp, const char *hostName,
     return ERR_TCP_SSL_OUTOFMEMORY;
   }
 
-  tcp_ssl->ssl = br_ssl_client_new(tcp, tcp_ssl->ssl_ctx);
+  tcp_ssl->ssl = br_ssl_client_new(tcp, tcp_ssl->ssl_ctx, params);
   if (!tcp_ssl->ssl) {
     TCP_SSL_DEBUG("tcp_ssl_new_client: failed to allocate ssl client\n");
     tcp_ssl_free(tcp);
     return ERR_TCP_SSL_OUTOFMEMORY;
   }
 
-  if (!br_ssl_client_reset(tcp_ssl->ssl->_cc, hostName, 0)) {
+  if (!br_ssl_client_reset(&tcp_ssl->ssl->_cc, hostName, 0)) {
     TCP_SSL_DEBUG("tcp_ssl_new_client: failed to reset\n");
     tcp_ssl_free(tcp);
     return ERR_TCP_SSL_INVALID_SSL_STATE;
