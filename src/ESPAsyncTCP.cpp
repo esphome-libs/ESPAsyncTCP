@@ -157,8 +157,14 @@ void ACErrorTracker::setErrored(size_t errorEvent){
  * is always returned.
  */
 err_t ACErrorTracker::getCallbackCloseError(void){
-  if (EE_OK != _errored)
+  if (EE_OK != _errored) {
+    // lwIP aborted the pcb while its callback ran (tcp_kill_* when the callback allocated a pcb)
+    if (EE_ERROR_CB == _errored && ERR_ABRT == _close_error) {
+      _errored = EE_ABORTED;
+      return ERR_ABRT;
+    }
     return ERR_OK;
+  }
   if (ERR_ABRT == _close_error)
     setErrored(EE_ABORTED);
   return _close_error;
@@ -368,24 +374,19 @@ bool AsyncClient::operator==(const AsyncClient &other) {
 }
 
 void AsyncClient::abort(){
-  // Notes:
-  // 1) _pcb is set to NULL, so we cannot call tcp_abort() more than once.
-  // 2) setCloseError(ERR_ABRT) is only done here!
-  // 3) Using this abort() function guarantees only one tcp_abort() call is
-  //    made and only one CB returns with ERR_ABORT.
-  // 4) After abort() is called from _close(), no callbacks with an err
-  //    parameter will be called.  eg. _recv(), _error(), _connected().
-  //    _close() will reset there CB handlers before calling.
-  // 5) A callback to _error(), will set _pcb to NULL, thus avoiding the
-  //    of a 2nd call to tcp_abort().
-  // 6) Callbacks to _recv() or _connected() with err set, will result in _pcb
-  //    set to NULL. Thus, preventing possible calls later to tcp_abort().
-  if(_pcb) {
-    tcp_abort(_pcb);
-    _pcb = NULL;
-    setCloseError(ERR_ABRT);
-  }
-  return;
+  if(!_pcb)
+    return;
+  _abort_pcb();
+  // Frees TLS and clears _pcb; the handlers may delete this
+  _error(ERR_ABRT);
+}
+
+// tcp_abort() frees the pcb before it runs the error callback, so detach first. ERR_ABRT makes
+// the running lwIP callback, if any, return it. The caller clears _pcb.
+void AsyncClient::_abort_pcb(){
+  clearTcpCallbacks(_pcb);
+  tcp_abort(_pcb);
+  setCloseError(ERR_ABRT);
 }
 
 void AsyncClient::close(bool now){
@@ -566,8 +567,8 @@ void AsyncClient::_close(){
       setCloseError(err);
       ASYNC_TCP_DEBUG("_close[%u]: AsyncClient 0x%" PRIXPTR "\n", getConnectionId(), uintptr_t(this));
     } else {
-      ASYNC_TCP_DEBUG("_close[%u]: abort() called for AsyncClient 0x%" PRIXPTR "\n", getConnectionId(), uintptr_t(this));
-      abort();
+      ASYNC_TCP_DEBUG("_close[%u]: tcp_close failed, aborting AsyncClient 0x%" PRIXPTR "\n", getConnectionId(), uintptr_t(this));
+      _abort_pcb();
     }
     _pcb = NULL;
     if(_discard_cb)
@@ -585,35 +586,24 @@ void AsyncClient::_error(err_t err) {
       tcp_ssl_free(_pcb);
     }
 #endif
-    // At this callback _pcb is possible already freed. Thus, no calls are
-    // made to set to NULL other callbacks.
+    // The pcb is already freed (by lwIP or _abort_pcb()); only the pointer is cleared
     _pcb = NULL;
   }
+  auto errorTracker = _errorTracker;
   if(_error_cb)
     _error_cb(_error_cb_arg, this, err);
-  if(_discard_cb)
+  // onError may have deleted the client
+  if(errorTracker->hasClient() && _discard_cb)
     _discard_cb(_discard_cb_arg, this);
 }
 
 #if ASYNC_TCP_SSL_ENABLED
-void AsyncClient::_ssl_error(int err){
-  if(_error_cb)
-    _error_cb(_error_cb_arg, this, to_async_ssl_error(err, _handshake_done));
-}
-
-// Tears a TLS connection down after an error, also from inside a callback:
-// detaches and frees everything before the handlers run, as they may delete this
+// Tears a TLS connection down after an error, also from inside a callback
 void AsyncClient::_ssl_abort(int err){
   if(!_pcb)
     return;
-  tcp_ssl_free(_pcb);
-  clearTcpCallbacks(_pcb);
-  abort();
-  auto errorTracker = _errorTracker;
-  _ssl_error(err);
-  // onError may have deleted the client
-  if(errorTracker->hasClient() && _discard_cb)
-    _discard_cb(_discard_cb_arg, this);
+  _abort_pcb();
+  _error(to_async_ssl_error(err, _handshake_done));
 }
 
 // Flushes pending TLS records; aborts the connection on any error.
@@ -753,7 +743,8 @@ void AsyncClient::_recv(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
     // IF this callback function returns ERR_OK or ERR_ABRT
     // then it is assummed we freed the pbufs.
     // https://www.nongnu.org/lwip/2_1_x/group__tcp__raw.html#ga8afd0b316a87a5eeff4726dc95006ed0
-    if(!errorTracker->hasClient()){
+    // Drop the rest of the chain once a callback deleted the client or closed the connection
+    if(!errorTracker->hasClient() || _pcb != pcb){
       while(pb != NULL){
         pbuf *b = pb;
         pb = b->next;
@@ -775,7 +766,7 @@ void AsyncClient::_recv(std::shared_ptr<ACErrorTracker>& errorTracker, tcp_pcb* 
         _recv_pbuf_flags = b->flags;
         _recv_cb(_recv_cb_arg, this, b->payload, b->len);
       }
-      if(errorTracker->hasClient()){
+      if(errorTracker->hasClient() && _pcb == pcb){
         if(!_ack_pcb)
           _rx_ack_len += b->len;
         else
@@ -869,10 +860,7 @@ void AsyncClient::_dns_found(const ip_addr *ipaddr){
 #endif
     _close_pcb = _close_pcb || close_requested;
   } else {
-    if(_error_cb)
-      _error_cb(_error_cb_arg, this, ASYNC_TCP_ERROR_DNS_FAILED);
-    if(_discard_cb)
-      _discard_cb(_discard_cb_arg, this);
+    _error(ASYNC_TCP_ERROR_DNS_FAILED);
   }
 }
 
