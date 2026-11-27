@@ -157,6 +157,7 @@ class AsyncClient {
     void _resetErrorTracker();
     void _connected(std::shared_ptr<ACErrorTracker>& closeAbort, void* pcb, err_t err);
     void _error(err_t err);
+    void _notify_error(err_t err);
 #if ASYNC_TCP_SSL_ENABLED
     bool connect(IPAddress ip, uint16_t port, bool secure, const char *host);
     void _ssl_abort(int err);

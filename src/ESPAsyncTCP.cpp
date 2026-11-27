@@ -589,10 +589,14 @@ void AsyncClient::_error(err_t err) {
     // The pcb is already freed (by lwIP or _abort_pcb()); only the pointer is cleared
     _pcb = NULL;
   }
+  _notify_error(err);
+}
+
+// Runs onError, then onDisconnect unless onError deleted the client or started a new connection
+void AsyncClient::_notify_error(err_t err){
   auto errorTracker = _errorTracker;
   if(_error_cb)
     _error_cb(_error_cb_arg, this, err);
-  // onError may have deleted the client
   if(errorTracker->hasClient() && _discard_cb)
     _discard_cb(_discard_cb_arg, this);
 }
@@ -860,7 +864,7 @@ void AsyncClient::_dns_found(const ip_addr *ipaddr){
 #endif
     _close_pcb = _close_pcb || close_requested;
   } else {
-    _error(ASYNC_TCP_ERROR_DNS_FAILED);
+    _notify_error(ASYNC_TCP_ERROR_DNS_FAILED);
   }
 }
 
